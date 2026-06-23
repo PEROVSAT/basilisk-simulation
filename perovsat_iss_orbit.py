@@ -22,6 +22,11 @@ PEROVSAT ISS Orbit Simulation
 Simulates PEROVSAT in a low Earth orbit matching the ISS (400km altitude,
 51.64 deg inclination). Outputs to Vizard for visualization.
 """
+import sys
+
+sys.path.append(r"C:\Users\abdul\orbit-library")
+
+from orbit_library.iss_orbit import get_iss_orbit
 
 import os
 
@@ -73,20 +78,12 @@ def run(show_plots):
     gravFactory.addBodiesTo(scObject)
 
     # ISS orbit elements
-    oe = orbitalMotion.ClassicElements()
-    earthRadius = 6378.0 * 1000
-    issAltitude = 420.0 * 1000
-    oe.a = earthRadius + issAltitude
-    oe.e = 0.0005
-    oe.i = 51.64 * macros.D2R
-    oe.Omega = 48.2 * macros.D2R
-    oe.omega = 347.8 * macros.D2R
-    oe.f = 85.3 * macros.D2R
-    rN, vN = orbitalMotion.elem2rv(mu, oe)
-    oe = orbitalMotion.rv2elem(mu, rN, vN)
+    rN, vN = get_iss_orbit(mu)
 
     scObject.hub.r_CN_NInit = rN
     scObject.hub.v_CN_NInit = vN
+
+    oe = orbitalMotion.rv2elem(mu, rN, vN)
 
     # Simulation time: 0.75 orbital periods
     n = np.sqrt(mu / oe.a ** 3)
