@@ -1,282 +1,388 @@
-
-#  ISC License
-#
-#  Copyright (c) 2016, Autonomous Vehicle Systems Lab, University of Colorado at Boulder
-#
-#  Permission to use, copy, modify, and/or distribute this software for any
-#  purpose with or without fee is hereby granted, provided that the above
-#  copyright notice and this permission notice appear in all copies.
-#
-#  THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
-#  WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
-#  MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
-#  ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
-#  WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
-#  ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
-#  OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
-#
-
-"""
-PEROVSAT ISS Orbit Simulation
-------------------------------
-Simulates PEROVSAT in a low Earth orbit matching the ISS (420 km altitude,
-51.64 deg inclination) with passive magnetic attitude control (PMAC).
-Outputs to Vizard for visualization.
-"""
-
-import os
-
-import matplotlib.pyplot as plt
 import numpy as np
 
-from Basilisk import __path__
-from Basilisk.simulation import spacecraft
-from Basilisk.utilities import (
-    SimulationBaseClass,
-    macros,
-    orbitalMotion,
-    simIncludeGravBody,
-    unitTestSupport,
-    vizSupport,
-)
+from Basilisk.architecture import messaging, sysModel
+from Basilisk.simulation import extForceTorque, magneticFieldWMM
+from Basilisk.utilities import RigidBodyKinematics as rbk
+from Basilisk.utilities.supportDataTools.dataFetcher import DataFile, get_path
 
-from perovsat_modules.iss_orbit import get_iss_orbit
-from perovsat_modules.pmac import PMAC
-
-bskPath = __path__[0]
-fileName = os.path.basename(os.path.splitext(__file__)[0])
+R_EARTH = 6378137.0  # WGS-84 mean Earth radius [m]
 
 
-def run(show_plots):
-    simTaskName = "simTask"
-    simProcessName = "simProcess"
+def _ecef_to_geodetic(r_ecef):
+    """
+    Convert ECEF position [m] to (lat_deg, lon_deg, alt_m).
+    Uses iterative Bowring method -- accurate to < 1 mm.
+    """
+    x, y, z = r_ecef
+    lon = np.degrees(np.arctan2(y, x))
+    p = np.sqrt(x**2 + y**2)
+    lat = np.degrees(np.arctan2(z, p * (1 - 0.00669437999014)))
+    for _ in range(5):
+        N = R_EARTH / np.sqrt(1 - 0.00669437999014 * np.sin(np.radians(lat))**2)
+        lat = np.degrees(np.arctan2(z + 0.00669437999014 * N * np.sin(np.radians(lat)), p))
+    N = R_EARTH / np.sqrt(1 - 0.00669437999014 * np.sin(np.radians(lat))**2)
+    alt = p / np.cos(np.radians(lat)) - N
+    return lat, lon, alt
 
-    scSim = SimulationBaseClass.SimBaseClass()
-    scSim.SetProgressBar(True)
 
-    dynProcess = scSim.CreateNewProcess(simProcessName)
-    simulation_step_sec = 10.0
-    simulation_days = 7.0
-    simulationTimeStep = macros.sec2nano(simulation_step_sec)
-    dynProcess.addTask(scSim.CreateNewTask(simTaskName, simulationTimeStep))
+def _unit(v):
+    """Return unit vector, or zero vector if v is near zero."""
+    n = np.linalg.norm(v)
+    return v / n if n > 1e-30 else v
 
-    # Spacecraft setup
-    scObject = spacecraft.Spacecraft()
-    scObject.ModelTag = "PEROVSAT"
-    scObject.hub.mHub = 1.2
-    scObject.hub.IHubPntBc_B = [
-        [0.002, 0.0, 0.0],
-        [0.0, 0.002, 0.0],
-        [0.0, 0.0, 0.001],
-    ]
-    scObject.hub.sigma_BNInit = [[0.2], [-0.1], [0.3]]
-    # MSN-11: must reach < 10 deg/s (0.175 rad/s) within 1 week of deployment
-    # PEROVSAT is designed to spin around Z (science mission requires it).
-    # PMAC damps transverse (X/Y) tumble. Z-spin is the operational state.
-    # ISS deployer post-ejection: transverse tumble ~2-5 deg/s, slow Z-spin ok.
-    scObject.hub.omega_BN_BInit = [[0.05], [0.07], [0.02]]  # X/Y tumble, slow Z
-    scSim.AddModelToTask(simTaskName, scObject)
 
-    # PMAC — magnet dipole along +Z to align spin axis with Earth's B-field.
-    # Magnet physically sits at -X/-Y/-Z corner (per PDR slide 20) but dipole
-    # points along Z so the satellite's science spin axis aligns with B-field.
-    #
-    # Hysteresis rods: Mu-Metal, 4x, 2mm dia, 95mm long
-    #   V = pi * (0.001)^2 * 0.095 * 4 = 1.194e-6 m^3
-    #   Br = 0.65 T  (Mu-Metal remanence)
-    #
-    # NOTE: Coercivity is set to an effective value (4000 A/m) rather than the
-    # material value (4 A/m). The linearized damping model tau = -C*omega
-    # underestimates damping by ~1000x because it does not capture the orbital
-    # B-field variation as the primary energy drain mechanism. The effective
-    # coercivity accounts for this, consistent with published PMAC analyses
-    # (Flatley & Henretty 1993) for comparable CubeSat configurations.
-    # A full Jiles-Atherton B-H state model is planned to replace this.
-    pmac = PMAC(
+def compute_hysteresis_damping(volume_m3, remanence_T, coercivity_Am,
+                                omega_orbit_rads):
+    """
+    Compute the hysteresis damping coefficient C_hyst [N*m*s/rad].
+
+    Derived from energy dissipated per B-H cycle:
+        E_loss = V * 4 * Br * Hc   (area of rectangular B-H loop approximation)
+
+    Converted to a viscous damping torque by dividing by one orbital cycle
+    (2*pi / omega_orbit), giving units of N*m / (rad/s):
+        C_hyst = (V * 4 * Br * Hc) / (2*pi / omega_orbit)
+               = V * 4 * Br * Hc * omega_orbit / (2*pi)
+
+    The resulting torque applied each step is:
+        tau_hyst = -C_hyst * omega_body
+
+    Parameters
+    ----------
+    volume_m3 : float
+        Total hysteresis rod volume [m^3].
+    remanence_T : float
+        Rod remanence Br [T].
+    coercivity_Am : float
+        Rod coercivity Hc [A/m].
+    omega_orbit_rads : float
+        Orbital angular velocity [rad/s], used to normalize energy per cycle.
+
+    Returns
+    -------
+    C_hyst : float
+        Damping coefficient [N*m*s/rad].
+    """
+    E_loss_per_cycle = volume_m3 * 4.0 * remanence_T * coercivity_Am
+    C_hyst = E_loss_per_cycle * omega_orbit_rads / (2.0 * np.pi)
+    return C_hyst
+
+
+class PMACLogger:
+    """
+    Records per-step PMAC data during simulation for post-run printing.
+
+    Stores:
+        times_s       : simulation time [s]
+        lat_deg       : geodetic latitude [deg]
+        lon_deg       : geodetic longitude [deg]
+        alt_km        : altitude [km]
+        B_dir_N       : Earth B-field unit vector (inertial frame)
+        magnet_dir_N  : satellite magnet axis unit vector (inertial frame)
+        torque_B      : total applied torque in body frame [N*m]
+        tau_mag_B     : magnet alignment torque component [N*m]
+        tau_hyst_B    : hysteresis damping torque component [N*m]
+        omega_B       : body angular velocity [rad/s]
+        theta_deg     : angle between magnet axis and B-field [deg]
+    """
+
+    def __init__(self):
+        self.times_s = []
+        self.lat_deg = []
+        self.lon_deg = []
+        self.alt_km = []
+        self.B_dir_N = []
+        self.magnet_dir_N = []
+        self.torque_B = []
+        self.tau_mag_B = []
+        self.tau_hyst_B = []
+        self.omega_B = []
+        self.theta_deg = []
+
+    def record(self, t_ns, r_N, B_N, sigma_BN, omega_BN_B,
+               magnet_axis_body, tau_mag_B, tau_hyst_B):
+        lat, lon, alt = _ecef_to_geodetic(r_N)
+        BN = rbk.MRP2C(sigma_BN)
+        NB = BN.T
+        magnet_dir_N = NB @ magnet_axis_body
+        B_dir = _unit(np.array(B_N))
+        mag_dir = _unit(magnet_dir_N)
+        theta = np.degrees(np.arccos(np.clip(np.dot(B_dir, mag_dir), -1.0, 1.0)))
+
+        self.times_s.append(t_ns * 1e-9)
+        self.lat_deg.append(lat)
+        self.lon_deg.append(lon)
+        self.alt_km.append(alt / 1000.0)
+        self.B_dir_N.append(B_dir)
+        self.magnet_dir_N.append(mag_dir)
+        self.tau_mag_B.append(np.array(tau_mag_B))
+        self.tau_hyst_B.append(np.array(tau_hyst_B))
+        self.torque_B.append(np.array(tau_mag_B) + np.array(tau_hyst_B))
+        self.omega_B.append(np.array(omega_BN_B))
+        self.theta_deg.append(theta)
+
+    def print_log(self, every_n=10):
+        """
+        Print a formatted table of logged values.
+
+        Parameters
+        ----------
+        every_n : int
+            Print every Nth recorded step to keep output readable.
+        """
+        sep = "=" * 140
+        header = (
+            "\n{}\n"
+            " {:>8}  {:>7}  {:>8}  {:>7}  "
+            "{:^28}  {:^28}  {:^28}  {:>10}  {:>12}\n"
+            "{}"
+        ).format(
+            sep,
+            "T [s]", "Lat", "Lon", "Alt km",
+            "B-field dir (inertial)",
+            "Magnet dir (inertial)",
+            "Total Torque [N*m]",
+            "|omega|",
+            "theta [deg]",
+            sep,
+        )
+        print(header)
+
+        indices = range(0, len(self.times_s), every_n)
+        for i in indices:
+            B = self.B_dir_N[i]
+            M = self.magnet_dir_N[i]
+            tau = self.torque_B[i]
+            omega_mag = np.linalg.norm(self.omega_B[i])
+            theta = self.theta_deg[i]
+            print(
+                " {:>8.1f}  {:>+7.2f}  {:>+8.2f}  {:>7.1f}"
+                "  [{:+.3f} {:+.3f} {:+.3f}]"
+                "  [{:+.3f} {:+.3f} {:+.3f}]"
+                "  [{:+.2e} {:+.2e} {:+.2e}]"
+                "  {:>10.4f}"
+                "  {:>10.1f}".format(
+                    self.times_s[i],
+                    self.lat_deg[i],
+                    self.lon_deg[i],
+                    self.alt_km[i],
+                    B[0], B[1], B[2],
+                    M[0], M[1], M[2],
+                    tau[0], tau[1], tau[2],
+                    omega_mag,
+                    theta,
+                )
+            )
+        print(sep)
+        print("  theta = angle between magnet axis and Earth B-field (goal: 0 deg)")
+        print("  |omega| = total body angular velocity magnitude [rad/s] (goal: ~0)\n")
+
+    def print_torque_breakdown(self, every_n=10):
+        """Print magnet vs hysteresis torque contributions separately."""
+        sep = "=" * 100
+        print("\n" + sep)
+        print(" {:>8}  {:^35}  {:^35}  {:>10}".format(
+            "T [s]", "Tau_magnet [N*m]", "Tau_hyst [N*m]", "|omega|"))
+        print(sep)
+        for i in range(0, len(self.times_s), every_n):
+            tm = self.tau_mag_B[i]
+            th = self.tau_hyst_B[i]
+            omega_mag = np.linalg.norm(self.omega_B[i])
+            print(
+                " {:>8.1f}"
+                "  [{:+.2e} {:+.2e} {:+.2e}]"
+                "  [{:+.2e} {:+.2e} {:+.2e}]"
+                "  {:>10.4f}".format(
+                    self.times_s[i],
+                    tm[0], tm[1], tm[2],
+                    th[0], th[1], th[2],
+                    omega_mag,
+                )
+            )
+        print(sep + "\n")
+
+
+class PMAC:
+    """
+    Passive Magnetic Attitude Control module for PEROVSAT.
+
+    Models both the permanent magnet (alignment torque) and hysteresis rods
+    (damping torque). Together they produce passive detumbling and attitude
+    stabilization aligned with Earth's magnetic field.
+
+    Torques applied each step:
+        tau_magnet = m_B x B_B            (alignment)
+        tau_hyst   = -C_hyst * omega_B    (damping)
+        tau_total  = tau_magnet + tau_hyst
+
+    Parameters
+    ----------
+    scSim : SimBaseClass
+    simTaskName : str
+    scObject : Spacecraft
+    dipole_moment_Am2 : float
+        Permanent magnet strength [A*m^2]. Default 0.15.
+    magnet_axis_body : array-like
+        Body-frame unit vector for magnet alignment. Default Z-axis.
+    hyst_volume_m3 : float
+        Total hysteresis rod volume [m^3]. Default 5e-7.
+    hyst_remanence_T : float
+        Rod remanence Br [T]. Default 0.25.
+    hyst_coercivity_Am : float
+        Rod coercivity Hc [A/m]. Default 80.
+    use_hysteresis : bool
+        Enable hysteresis damping. Default True.
+    """
+
+    def __init__(
+        self,
         scSim,
         simTaskName,
         scObject,
         dipole_moment_Am2=0.15,
-        magnet_axis_body=np.array([0.0, 0.0, 1.0]),   # +Z = science spin axis
-        hyst_volume_m3=1.194e-6,
-        hyst_remanence_T=0.65,
-        hyst_coercivity_Am=4000.0,    # effective value — see note above
+        magnet_axis_body=np.array([0.0, 0.0, 1.0]),
+        hyst_volume_m3=5e-7,
+        hyst_remanence_T=0.25,
+        hyst_coercivity_Am=80.0,
         use_hysteresis=True,
-    )
+    ):
+        self.scSim = scSim
+        self.scObject = scObject
+        self.dipole_moment = dipole_moment_Am2
+        self.axis = magnet_axis_body / np.linalg.norm(magnet_axis_body)
+        self.use_hysteresis = use_hysteresis
+        self.logger = PMACLogger()
 
-    # Gravity
-    gravFactory = simIncludeGravBody.gravBodyFactory()
-    planet = gravFactory.createEarth()
-    planet.isCentralBody = True
-    mu = planet.mu
-    gravFactory.addBodiesTo(scObject)
+        # Orbital parameters for C_hyst calculation (ISS orbit)
+        mu_earth = 3.986004418e14          # [m^3/s^2]
+        a_iss = (R_EARTH + 420e3)          # semi-major axis [m]
+        omega_orbit = np.sqrt(mu_earth / a_iss**3)   # [rad/s]
 
-    # ISS orbit
-    rN, vN = get_iss_orbit(mu)
-    scObject.hub.r_CN_NInit = rN
-    scObject.hub.v_CN_NInit = vN
-    oe = orbitalMotion.rv2elem(mu, rN, vN)
+        if use_hysteresis:
+            C_hyst = compute_hysteresis_damping(
+                hyst_volume_m3, hyst_remanence_T, hyst_coercivity_Am, omega_orbit
+            )
+        else:
+            C_hyst = 0.0
 
-    # Simulation time: 7 days — MSN-11 requires < 10 deg/s within 1 week
-    n = np.sqrt(mu / oe.a ** 3)
-    P = 2.0 * np.pi / n
-    orbits_per_day = 86400 / P
-    simulationTime = macros.sec2nano(simulation_days * 86400.0)
-
-    # Data logging
-    numDataPoints = 100
-    samplingTime = unitTestSupport.samplingTime(simulationTime, simulationTimeStep, numDataPoints)
-    dataRec = scObject.scStateOutMsg.recorder(samplingTime)
-    scSim.AddModelToTask(simTaskName, dataRec)
-
-    # Vizard
-    if vizSupport.vizFound:
-        viz = vizSupport.enableUnityVisualization(
-            scSim,
-            simTaskName,
-            scObject,
-            saveFile=__file__,
+        self.controller = PMACController(
+            self.dipole_moment, self.axis, C_hyst, self.logger
         )
-        viz.settings.showSpacecraftLabels = 1
+        scSim.AddModelToTask(simTaskName, self.controller)
 
-    scSim.InitializeSimulation()
-    scSim.ConfigureStopTime(simulationTime)
-    scSim.ExecuteSimulation()
+        self._setup_wmm(simTaskName)
+        self._setup_torque_effector(simTaskName)
 
-    # Post-run diagnostics
-    # 7 days at 10s timestep = ~60480 steps; every_n=500 gives ~120 rows
-    pmac.print_log(every_n=500)
-    pmac.print_torque_breakdown(every_n=500)
-    pmac.print_field_sample()
-    pmac.logger.validation_summary()
+        self.controller.scStateInMsg.subscribeTo(self.scObject.scStateOutMsg)
 
-    final_omega = dataRec.omega_BN_B[-1]
-    omega_xy = np.sqrt(final_omega[0]**2 + final_omega[1]**2)
-    omega_z  = abs(final_omega[2])
-    omega_total = np.linalg.norm(final_omega)
-    print("\n--- MSN-11 Validation ---")
-    print("Final |omega| total:      {:.4f} rad/s = {:.2f} deg/s".format(
-        omega_total, np.degrees(omega_total)))
-    print("Final |omega| transverse: {:.4f} rad/s = {:.2f} deg/s  (X/Y tumble — PMAC target)".format(
-        omega_xy, np.degrees(omega_xy)))
-    print("Final |omega| Z-spin:     {:.4f} rad/s = {:.2f} deg/s  (science spin — expected)".format(
-        omega_z, np.degrees(omega_z)))
-    print("MSN-11 requirement: transverse tumble < 10 deg/s within 1 week")
-    print("Result:", "PASS" if np.degrees(omega_xy) < 10.0 else "FAIL")
-    print("-------------------------")
-    print("Final angular velocity [rad/s]:", final_omega)
-    print("Final MRP attitude:", dataRec.sigma_BN[-1])
+        print("PMAC initialized")
+        print("  Dipole:      {} A*m^2  axis: {}".format(dipole_moment_Am2, self.axis))
+        if use_hysteresis:
+            print("  Hysteresis:  V={:.2e} m^3  Br={} T  Hc={} A/m  C_hyst={:.4e} N*m*s/rad".format(
+                hyst_volume_m3, hyst_remanence_T, hyst_coercivity_Am, C_hyst))
+        else:
+            print("  Hysteresis:  disabled")
 
-    posData = dataRec.r_BN_N
-    velData = dataRec.v_BN_N
+    def _setup_wmm(self, simTaskName):
+        self.magModule = magneticFieldWMM.MagneticFieldWMM()
+        self.magModule.ModelTag = "PMAC_WMM"
+        self.magModule.configureWMMFile(str(get_path(DataFile.MagneticFieldData.WMM)))
+        self.magModule.addSpacecraftToModel(self.scObject.scStateOutMsg)
+        self.scSim.AddModelToTask(simTaskName, self.magModule)
 
-    figureList = plotOrbits(dataRec.times(), posData, velData, oe, mu, P)
-    plotConvergence(pmac.logger, P, figureList)
+        self.magLog = self.magModule.envOutMsgs[0].recorder()
+        self.scSim.AddModelToTask(simTaskName, self.magLog)
 
-    if show_plots:
-        plt.show()
-    plt.close("all")
+        self.controller.magFieldInMsg.subscribeTo(self.magModule.envOutMsgs[0])
+        print("WMM initialized")
 
-    return figureList
+    def _setup_torque_effector(self, simTaskName):
+        self.extFTObject = extForceTorque.ExtForceTorque()
+        self.extFTObject.ModelTag = "PMAC_Torque"
+        self.scObject.addDynamicEffector(self.extFTObject)
+        self.scSim.AddModelToTask(simTaskName, self.extFTObject)
+        self.extFTObject.cmdTorqueInMsg.subscribeTo(self.controller.cmdTorqueOutMsg)
+        print("ExtForceTorque initialized")
+
+    def print_log(self, every_n=10):
+        self.logger.print_log(every_n=every_n)
+
+    def print_torque_breakdown(self, every_n=10):
+        self.logger.print_torque_breakdown(every_n=every_n)
+
+    def print_field_sample(self):
+        try:
+            B_N = np.array(self.magLog.magField_N[-1])
+            scLog = self.scObject.scStateOutMsg.read()
+            sigma_BN = np.array(scLog.sigma_BN)
+            omega_B = np.array(scLog.omega_BN_B)
+
+            BN = rbk.MRP2C(sigma_BN)
+            B_B = BN @ B_N
+            m_B = self.dipole_moment * self.axis
+            tau_mag = np.cross(m_B, B_B)
+            tau_hyst = -self.controller.C_hyst * omega_B
+            tau_total = tau_mag + tau_hyst
+
+            print("PMAC final state:")
+            print("  B-field inertial [T]:", B_N)
+            print("  B-field body     [T]:", B_B)
+            print("  Tau_magnet [N*m]:    ", tau_mag)
+            print("  Tau_hyst   [N*m]:    ", tau_hyst)
+            print("  Tau_total  [N*m]:    ", tau_total)
+            print("  |Tau_total|:         ", np.linalg.norm(tau_total), "N*m")
+        except Exception as e:
+            print("PMAC diagnostic error:", e)
 
 
-def plotOrbits(timeAxis, posData, velData, oe, mu, P):
-    plt.close("all")
+class PMACController(sysModel.SysModel):
+    """
+    Basilisk SysModel computing total PMAC torque each step:
+        tau_magnet = m_B x B_B     (permanent magnet alignment)
+        tau_hyst   = -C_hyst * w   (hysteresis rod damping)
+        tau_total  = tau_magnet + tau_hyst
+    """
 
-    # Inertial position components
-    plt.figure(1)
-    fig = plt.gcf()
-    ax = fig.gca()
-    ax.ticklabel_format(useOffset=False, style="plain")
-    for idx in range(3):
-        plt.plot(
-            timeAxis * macros.NANO2SEC / P,
-            posData[:, idx] / 1000.0,
-            color=unitTestSupport.getLineColor(idx, 3),
-            label="$r_{BN," + str(idx) + "}$",
+    def __init__(self, dipole_moment, axis, C_hyst, logger):
+        super(PMACController, self).__init__()
+        self.dipole_moment = dipole_moment
+        self.axis = axis
+        self.C_hyst = C_hyst
+        self.logger = logger
+        self.magFieldInMsg = messaging.MagneticFieldMsgReader()
+        self.scStateInMsg = messaging.SCStatesMsgReader()
+        self.cmdTorqueOutMsg = messaging.CmdTorqueBodyMsg()
+
+    def Reset(self, CurrentSimNanos):
+        pass
+
+    def UpdateState(self, CurrentSimNanos):
+        magBuffer = self.magFieldInMsg()
+        scBuffer = self.scStateInMsg()
+
+        B_N = np.array(magBuffer.magField_N)
+        sigma_BN = np.array(scBuffer.sigma_BN)
+        omega_B = np.array(scBuffer.omega_BN_B)
+        r_N = np.array(scBuffer.r_BN_N)
+
+        # Rotate B-field into body frame
+        BN = rbk.MRP2C(sigma_BN)
+        B_B = BN @ B_N
+
+        # Permanent magnet alignment torque: tau_mag = m_B x B_B
+        m_B = self.dipole_moment * self.axis
+        tau_mag_B = np.cross(m_B, B_B)
+
+        # Hysteresis damping torque: tau_hyst = -C_hyst * omega
+        tau_hyst_B = -self.C_hyst * omega_B
+
+        tau_total_B = tau_mag_B + tau_hyst_B
+
+        self.logger.record(
+            CurrentSimNanos, r_N, B_N, sigma_BN, omega_B,
+            self.axis, tau_mag_B, tau_hyst_B
         )
-    plt.legend(loc="lower right")
-    plt.xlabel("Time [orbits]")
-    plt.ylabel("Inertial Position [km]")
 
-    figureList = {}
-    figureList[fileName + "1"] = plt.figure(1)
-
-    # Orbit in perifocal frame
-    b = oe.a * np.sqrt(1 - oe.e ** 2)
-    p = oe.a * (1 - oe.e ** 2)
-    plt.figure(2, figsize=tuple(np.array((1.0, b / oe.a)) * 4.75), dpi=100)
-    plt.axis(np.array([-oe.rApoap, oe.rPeriap, -b, b]) / 1000 * 1.25)
-    fig = plt.gcf()
-    ax = fig.gca()
-    ax.add_artist(plt.Circle((0, 0), 6378.0, color="#008800"))  # Earth
-    rData, fData = [], []
-    for idx in range(len(posData)):
-        oeData = orbitalMotion.rv2elem(mu, posData[idx], velData[idx])
-        rData.append(oeData.rmag)
-        fData.append(oeData.f + oeData.omega - oe.omega)
-    plt.plot(
-        np.array(rData) * np.cos(fData) / 1000,
-        np.array(rData) * np.sin(fData) / 1000,
-        color="#aa0000",
-        linewidth=3.0,
-    )
-    fFull = np.linspace(0, 2 * np.pi, 100)
-    rFull = [p / (1 + oe.e * np.cos(f)) for f in fFull]
-    plt.plot(
-        np.array(rFull) * np.cos(fFull) / 1000,
-        np.array(rFull) * np.sin(fFull) / 1000,
-        "--",
-        color="#555555",
-    )
-    plt.xlabel("$i_e$ Cord. [km]")
-    plt.ylabel("$i_p$ Cord. [km]")
-    plt.grid()
-    figureList[fileName + "2"] = plt.figure(2)
-
-    return figureList
-
-
-def plotConvergence(logger, P, figureList):
-    """Plot |omega| and theta vs time to show PMAC detumbling and alignment."""
-    times_days = np.array(logger.times_s) / 86400.0
-    omega_mag_degs = [np.degrees(np.linalg.norm(w)) for w in logger.omega_B]
-    theta = logger.theta_deg
-
-    # Angular velocity decay — MSN-11 threshold line
-    plt.figure(3)
-    plt.plot(times_days, omega_mag_degs, color="#aa0000", label="|omega|")
-    plt.axhline(y=10.0, color="black", linestyle="--", linewidth=1.0,
-                label="MSN-11 limit (10 deg/s)")
-    plt.xlabel("Time [days]")
-    plt.ylabel("|omega| [deg/s]")
-    plt.title("PMAC Detumbling — Angular Velocity (MSN-11: < 10 deg/s in 7 days)")
-    plt.legend()
-    plt.grid()
-    figureList[fileName + "3"] = plt.figure(3)
-
-    # Alignment angle
-    plt.figure(4)
-    plt.plot(times_days, theta, color="#0055aa")
-    plt.axhline(y=0, color="black", linestyle="--", linewidth=0.8)
-    plt.xlabel("Time [days]")
-    plt.ylabel("theta [deg]")
-    plt.title("PMAC Alignment — Angle to B-field (goal: 0 deg)")
-    plt.grid()
-    figureList[fileName + "4"] = plt.figure(4)
-    plt.figure(5)
-    tauMag=[np.linalg.norm(t) for t in logger.tau_mag_B]
-    tauHyst=[np.linalg.norm(t) for t in logger.tau_hyst_B]
-    plt.plot(times_days,tauMag,label="Magnet")
-    plt.plot(times_days,tauHyst,label="Hysteresis")
-    plt.xlabel("Time [days]")
-    plt.ylabel("Torque [N*m]")
-    plt.title("PMAC Torque Components")
-    plt.grid()
-    plt.legend()
-    figureList[fileName + "5"] = plt.figure(5)
-
-
-
-if __name__ == "__main__":
-    run(True)
+        payload = messaging.CmdTorqueBodyMsgPayload()
+        payload.torqueRequestBody = tau_total_B.tolist()
+        self.cmdTorqueOutMsg.write(payload, CurrentSimNanos, self.moduleID)

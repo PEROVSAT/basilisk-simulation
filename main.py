@@ -150,10 +150,8 @@ def run(show_plots):
     pmac.print_log(every_n=500)
     pmac.print_torque_breakdown(every_n=500)
     pmac.print_field_sample()
-<<<<<<< HEAD
-=======
+
     pmac.logger.validation_summary()
->>>>>>> 255bc155fcbc9f532d78df70c774548e42999e4b
 
     final_omega = dataRec.omega_BN_B[-1]
     omega_xy = np.sqrt(final_omega[0]**2 + final_omega[1]**2)
@@ -183,107 +181,6 @@ def run(show_plots):
     plt.close("all")
 
     return figureList
-
-
-def plotOrbits(timeAxis, posData, velData, oe, mu, P):
-    plt.close("all")
-
-    # Inertial position components
-    plt.figure(1)
-    fig = plt.gcf()
-    ax = fig.gca()
-    ax.ticklabel_format(useOffset=False, style="plain")
-    for idx in range(3):
-        plt.plot(
-            timeAxis * macros.NANO2SEC / P,
-            posData[:, idx] / 1000.0,
-            color=unitTestSupport.getLineColor(idx, 3),
-            label="$r_{BN," + str(idx) + "}$",
-        )
-    plt.legend(loc="lower right")
-    plt.xlabel("Time [orbits]")
-    plt.ylabel("Inertial Position [km]")
-
-    figureList = {}
-    figureList[fileName + "1"] = plt.figure(1)
-
-    # Orbit in perifocal frame
-    b = oe.a * np.sqrt(1 - oe.e ** 2)
-    p = oe.a * (1 - oe.e ** 2)
-    plt.figure(2, figsize=tuple(np.array((1.0, b / oe.a)) * 4.75), dpi=100)
-    plt.axis(np.array([-oe.rApoap, oe.rPeriap, -b, b]) / 1000 * 1.25)
-    fig = plt.gcf()
-    ax = fig.gca()
-    ax.add_artist(plt.Circle((0, 0), 6378.0, color="#008800"))  # Earth
-    rData, fData = [], []
-    for idx in range(len(posData)):
-        oeData = orbitalMotion.rv2elem(mu, posData[idx], velData[idx])
-        rData.append(oeData.rmag)
-        fData.append(oeData.f + oeData.omega - oe.omega)
-    plt.plot(
-        np.array(rData) * np.cos(fData) / 1000,
-        np.array(rData) * np.sin(fData) / 1000,
-        color="#aa0000",
-        linewidth=3.0,
-    )
-    fFull = np.linspace(0, 2 * np.pi, 100)
-    rFull = [p / (1 + oe.e * np.cos(f)) for f in fFull]
-    plt.plot(
-        np.array(rFull) * np.cos(fFull) / 1000,
-        np.array(rFull) * np.sin(fFull) / 1000,
-        "--",
-        color="#555555",
-    )
-    plt.xlabel("$i_e$ Cord. [km]")
-    plt.ylabel("$i_p$ Cord. [km]")
-    plt.grid()
-    figureList[fileName + "2"] = plt.figure(2)
-
-    return figureList
-
-
-def plotConvergence(logger, P, figureList):
-    """Plot |omega| and theta vs time to show PMAC detumbling and alignment."""
-    times_days = np.array(logger.times_s) / 86400.0
-    omega_mag_degs = [np.degrees(np.linalg.norm(w)) for w in logger.omega_B]
-    theta = logger.theta_deg
-
-    # Angular velocity decay — MSN-11 threshold line
-    plt.figure(3)
-    plt.plot(times_days, omega_mag_degs, color="#aa0000", label="|omega|")
-    plt.axhline(y=10.0, color="black", linestyle="--", linewidth=1.0,
-                label="MSN-11 limit (10 deg/s)")
-    plt.xlabel("Time [days]")
-    plt.ylabel("|omega| [deg/s]")
-    plt.title("PMAC Detumbling — Angular Velocity (MSN-11: < 10 deg/s in 7 days)")
-    plt.legend()
-    plt.grid()
-    figureList[fileName + "3"] = plt.figure(3)
-
-    # Alignment angle
-    plt.figure(4)
-    plt.plot(times_days, theta, color="#0055aa")
-    plt.axhline(y=0, color="black", linestyle="--", linewidth=0.8)
-    plt.xlabel("Time [days]")
-    plt.ylabel("theta [deg]")
-    plt.title("PMAC Alignment — Angle to B-field (goal: 0 deg)")
-    plt.grid()
-    figureList[fileName + "4"] = plt.figure(4)
-<<<<<<< HEAD
-=======
-    plt.figure(5)
-    tauMag=[np.linalg.norm(t) for t in logger.tau_mag_B]
-    tauHyst=[np.linalg.norm(t) for t in logger.tau_hyst_B]
-    plt.plot(times_days,tauMag,label="Magnet")
-    plt.plot(times_days,tauHyst,label="Hysteresis")
-    plt.xlabel("Time [days]")
-    plt.ylabel("Torque [N*m]")
-    plt.title("PMAC Torque Components")
-    plt.grid()
-    plt.legend()
-    figureList[fileName + "5"] = plt.figure(5)
-
->>>>>>> 255bc155fcbc9f532d78df70c774548e42999e4b
 
 
 if __name__ == "__main__":
