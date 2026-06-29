@@ -1,4 +1,8 @@
+<<<<<<< HEAD
  #
+=======
+
+>>>>>>> 255bc155fcbc9f532d78df70c774548e42999e4b
 #  ISC License
 #
 #  Copyright (c) 2016, Autonomous Vehicle Systems Lab, University of Colorado at Boulder
@@ -146,6 +150,10 @@ def run(show_plots):
     pmac.print_log(every_n=500)
     pmac.print_torque_breakdown(every_n=500)
     pmac.print_field_sample()
+<<<<<<< HEAD
+=======
+    pmac.logger.validation_summary()
+>>>>>>> 255bc155fcbc9f532d78df70c774548e42999e4b
 
     final_omega = dataRec.omega_BN_B[-1]
     omega_xy = np.sqrt(final_omega[0]**2 + final_omega[1]**2)
@@ -261,6 +269,21 @@ def plotConvergence(logger, P, figureList):
     plt.title("PMAC Alignment — Angle to B-field (goal: 0 deg)")
     plt.grid()
     figureList[fileName + "4"] = plt.figure(4)
+<<<<<<< HEAD
+=======
+    plt.figure(5)
+    tauMag=[np.linalg.norm(t) for t in logger.tau_mag_B]
+    tauHyst=[np.linalg.norm(t) for t in logger.tau_hyst_B]
+    plt.plot(times_days,tauMag,label="Magnet")
+    plt.plot(times_days,tauHyst,label="Hysteresis")
+    plt.xlabel("Time [days]")
+    plt.ylabel("Torque [N*m]")
+    plt.title("PMAC Torque Components")
+    plt.grid()
+    plt.legend()
+    figureList[fileName + "5"] = plt.figure(5)
+
+>>>>>>> 255bc155fcbc9f532d78df70c774548e42999e4b
 
 
 if __name__ == "__main__":
