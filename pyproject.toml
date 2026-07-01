@@ -1,0 +1,19 @@
+[build-system]
+requires = [
+    "scikit-build-core>=0.9.3",
+    "numpy>=1.24",
+    "bsk==2.10.2",
+    "bsk-sdk==2.10.2",
+    "swig>=4.4.1,<5",
+]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "perovsat-plugins"
+version = "0.1.0"
+description = "Compiled Basilisk modules for the PEROVSAT simulation"
+
+[tool.scikit-build]
+# No source-tree Python packages — all package contents (including __init__.py)
+# are written into SKBUILD_PLATLIB_DIR by CMakeLists.txt at configure time.
+wheel.packages = []
