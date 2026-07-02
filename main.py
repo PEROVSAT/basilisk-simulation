@@ -1,8 +1,3 @@
-<<<<<<< HEAD
- #
-=======
-
->>>>>>> 255bc155fcbc9f532d78df70c774548e42999e4b
 #  ISC License
 #
 #  Copyright (c) 2016, Autonomous Vehicle Systems Lab, University of Colorado at Boulder

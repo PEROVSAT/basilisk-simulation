@@ -41,3 +41,14 @@ bsk_add_swig_module(
     "${CMAKE_CURRENT_SOURCE_DIR}/ExternalModules/permanentMagnet"
   OUTPUT_DIR "${PLUGIN_PKG_DIR}"
 )
+
+# hyteresisRods — C++ StateEffector implementing the Jiles-Atherton hysteresis
+# rod model for passive magnetic attitude detumbling.
+bsk_add_swig_module(
+  TARGET hyteresisRods
+  INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/ExternalModules/hyteresisRods/hyteresisRods.i"
+  SOURCES   "${CMAKE_CURRENT_SOURCE_DIR}/ExternalModules/hyteresisRods/hyteresisRods.cpp"
+  INCLUDE_DIRS
+    "${CMAKE_CURRENT_SOURCE_DIR}/ExternalModules/hyteresisRods"
+  OUTPUT_DIR "${PLUGIN_PKG_DIR}"
+)
