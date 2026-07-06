@@ -40,6 +40,14 @@ HysteresisRods::HysteresisRods() {
     this->firstFieldRead = true;
     this->B_B_cached.setZero();
 
+    // Debug payload defaults
+    this->debug_H = 0.0;
+    this->debug_Hdot = 0.0;
+    this->debug_Man = 0.0;
+    this->debug_He = 0.0;
+    this->debug_chi_irr = 0.0;
+    this->debug_dMdH = 0.0;
+
     // StateEffector base-class force/torque containers
     this->forceOnBody_B.setZero();
     this->torqueOnBodyPntB_B.setZero();
@@ -109,6 +117,17 @@ void HysteresisRods::UpdateState(uint64_t CurrentSimNanos) {
     CmdTorqueBodyMsgPayload torqueMsg = {};
     eigenVector3d2CArray(this->torqueOnBodyPntB_B, torqueMsg.torqueRequestBody);
     this->torqueLogOutMsg.write(&torqueMsg, this->moduleID, CurrentSimNanos);
+
+    // Write JA internal state for debug logging
+    HysteresisDebugMsgPayload debugMsg = {};
+    debugMsg.H = this->debug_H;
+    debugMsg.Hdot = this->debug_Hdot;
+    debugMsg.Man = this->debug_Man;
+    debugMsg.He = this->debug_He;
+    debugMsg.chi_irr = this->debug_chi_irr;
+    debugMsg.dMdH = this->debug_dMdH;
+    debugMsg.M = this->debug_M;
+    this->hysteresisDebugOutMsg.write(&debugMsg, this->moduleID, CurrentSimNanos);
 }
 
 // ---------------------------------------------------------------------------
@@ -166,8 +185,11 @@ void HysteresisRods::computeDerivatives(double integTime,
     // $M$: current magnetization from the ODE state.
     double magnetization = this->magState->getState()(0, 0);
 
-    // $H_e = H + \alpha M$: effective field seen by the magnetic domains.
-    double effectiveFieldHe = axialFieldH + this->alpha * magnetization;
+    // $H_{in} = H - N_d M$: The internal field reduced by boundary poles
+    // $H_e = H_{in} + \alpha M$: The effective JA domain-wall field
+    // Combined: $H_e = H + (\alpha - N_d) M$
+    double effectiveAlpha = this->alpha - this->Nd;
+    double effectiveFieldHe = axialFieldH + effectiveAlpha * magnetization;
 
     // $M_{an} = M_s\left(\coth(H_e/a) - a/H_e\right)$ and its slope
     // $\frac{dM_{an}}{dH_e} = \frac{M_s}{a}\left(1 - \coth^2(H_e/a) + (a/H_e)^2\right)$.
@@ -187,8 +209,7 @@ void HysteresisRods::computeDerivatives(double integTime,
                             * (1.0 - cothx * cothx + 1.0 / (x * x));
     }
 
-    // $\delta = \tanh(\dot{H}/\varepsilon) \approx \mathrm{sgn}(\dot{H})$
-    // Smoothed to keep the derivative continuous and stop solver chattering.
+    // $\delta \approx \mathrm{sgn}(\dot{H})$, using tanh as an approximation
     double fieldDirection = std::tanh(axialFieldRateH / this->deltaSmoothing);
 
     // Irreversible differential susceptibility (w.r.t. $H_e$):
@@ -200,7 +221,8 @@ void HysteresisRods::computeDerivatives(double integTime,
     if (fieldDirection * manMinusM <= 0.0) {
         chiIrr = 0.0;
     } else {
-        double denom = this->k * fieldDirection - this->alpha * manMinusM;
+        // Irreversible differential susceptibility (w.r.t. $H_e$)
+        double denom = this->k * fieldDirection - effectiveAlpha * manMinusM;
         const double denomFloor = 1.0e-12;
         if (std::fabs(denom) < denomFloor) {
             denom = std::copysign(denomFloor, denom);
@@ -212,12 +234,21 @@ void HysteresisRods::computeDerivatives(double integTime,
     // $\frac{dM}{dH} = \frac{K}{1-\alpha K}$, with
     // $K = (1-c)\,\chi_{irr} + c\,\frac{dM_{an}}{dH_e}$.
     double K = (1.0 - this->c) * chiIrr + this->c * anhystereticSlope;
-    double couplingDenom = 1.0 - this->alpha * K;
+    double couplingDenom = 1.0 - effectiveAlpha * K;
     const double couplingFloor = 1.0e-12;
     if (std::fabs(couplingDenom) < couplingFloor) {
         couplingDenom = std::copysign(couplingFloor, couplingDenom);
     }
     double dMag_dField = K / couplingDenom;
+
+    // Cache JA debug quantities for the discrete debug message
+    this->debug_H = axialFieldH;
+    this->debug_Hdot = axialFieldRateH;
+    this->debug_Man = anhystereticMag;
+    this->debug_He = effectiveFieldHe;
+    this->debug_chi_irr = chiIrr;
+    this->debug_dMdH = dMag_dField;
+    this->debug_M = magnetization;
 
     // $\frac{dM}{dt} = \frac{dM}{dH}\,\dot{H}$: value handed to the integrator.
     double magnetizationRate = dMag_dField * axialFieldRateH;

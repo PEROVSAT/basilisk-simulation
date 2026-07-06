@@ -27,10 +27,13 @@ find_package(bsk-sdk CONFIG REQUIRED)
 
 set(PLUGIN_PKG_DIR "${SKBUILD_PLATLIB_DIR}/perovsat_plugins")
 
-# Create the package marker so Python treats this as a regular package.
-# Done here (configure time) rather than from a source-tree directory to
-# avoid the source folder shadowing the installed package at runtime.
-file(WRITE "${PLUGIN_PKG_DIR}/__init__.py" "")
+# Package init imports generated messaging before SWIG wrappers so custom
+# message fields (e.g. hysteresisDebugOutMsg) expose recorder().
+configure_file(
+  "${CMAKE_CURRENT_SOURCE_DIR}/python/perovsat_plugins/__init__.py"
+  "${PLUGIN_PKG_DIR}/__init__.py"
+  COPYONLY
+)
 
 # permanentMagnet — C++ DynamicEffector that applies a permanent dipole torque.
 bsk_add_swig_module(
@@ -50,5 +53,12 @@ bsk_add_swig_module(
   SOURCES   "${CMAKE_CURRENT_SOURCE_DIR}/ExternalModules/hyteresisRods/hyteresisRods.cpp"
   INCLUDE_DIRS
     "${CMAKE_CURRENT_SOURCE_DIR}/ExternalModules/hyteresisRods"
+    "${CMAKE_CURRENT_SOURCE_DIR}/messages"
   OUTPUT_DIR "${PLUGIN_PKG_DIR}"
+)
+
+bsk_generate_messages(
+  OUTPUT_DIR "${PLUGIN_PKG_DIR}/messaging"
+  MSG_HEADERS
+    "${CMAKE_CURRENT_SOURCE_DIR}/messages/HysteresisDebugMsgPayload.h"
 )

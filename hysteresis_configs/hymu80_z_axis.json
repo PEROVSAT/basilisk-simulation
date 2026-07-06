@@ -1,0 +1,9 @@
+{
+  "_desc": "Narrow loop and high reversibility HyMu80 for the z axis libration dampening",
+  "Ms": 517000.0,
+  "a": 0.1,
+  "alpha": 0.0001,
+  "k": 2.0,
+  "c": 0.3,
+  "M0": 0.0
+}

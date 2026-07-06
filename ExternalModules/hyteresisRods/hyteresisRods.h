@@ -7,6 +7,7 @@
 #include "architecture/messaging/messaging.h"
 #include "architecture/msgPayloadDefC/MagneticFieldMsgPayload.h"
 #include "architecture/msgPayloadDefC/CmdTorqueBodyMsgPayload.h"
+#include "HysteresisDebugMsgPayload.h"
 #include "architecture/utilities/bskLogging.h"
 #include <Eigen/Dense>
 #include <string>
@@ -40,19 +41,21 @@ public:
 public:
     // Message interfaces
     ReadFunctor<MagneticFieldMsgPayload> magFieldInMsg;
-    Message<CmdTorqueBodyMsgPayload> torqueLogOutMsg;  // Logging/plotting only
+    Message<CmdTorqueBodyMsgPayload> torqueLogOutMsg;       // Logging/plotting only
+    Message<HysteresisDebugMsgPayload> hysteresisDebugOutMsg;
 
-    // Jiles-Atherton material parameters (set from Python)
+    // Jiles-Atherton material parameters
     double Ms;     // [A/m]  Saturation magnetization
-    double a;      // [A/m]  Shape parameter (Langevin denominator scale)
-    double alpha;  // [-]    Interdomain coupling coefficient
-    double k;      // [A/m]  Coercivity / domain-wall pinning
-    double c;      // [-]    Reversibility coefficient
-    double M0;     // [A/m]  Initial magnetization (seed value at t=0)
+    double a;      // [A/m]  Shape parameter
+    double alpha;  // [-]    Interdomain coupling coefficient (Material)
+    double k;      // [A/m]  Coercivity
+    double c;      // [-]    Reversibility
+    double M0;     // [A/m]  Initial magnetization
 
-    // Rod geometry (set from Python)
-    Eigen::Vector3d u_B;  // [-]    Rod axis unit vector in body frame
-    double V;             // [m^3]  Total rod volume
+    // Rod geometry
+    Eigen::Vector3d u_B; 
+    double V;            
+    double Nd;     // [-]    Demagnetization factor (Geometry)
 
     // Numerical smoothing (set from Python; tunable)
     double deltaSmoothing;  // [A/m/s] width of the tanh() used to smooth sgn(Hdot).
@@ -87,6 +90,15 @@ private:
 
     // Most-recently read discrete field message
     MagneticFieldMsgPayload magFieldMsgBuffer;
+
+    // Cached JA debug quantities (updated in computeDerivatives, logged in UpdateState)
+    double debug_H;
+    double debug_Hdot;
+    double debug_Man;
+    double debug_He;
+    double debug_chi_irr;
+    double debug_dMdH;
+    double debug_M;
 };
 
 #endif

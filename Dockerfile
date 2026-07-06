@@ -30,7 +30,9 @@ RUN pip install --no-cache-dir \
 
 WORKDIR /src
 COPY pyproject.toml CMakeLists.txt ./
+COPY python/ python/
 COPY ExternalModules/ ExternalModules/
+COPY messages/ messages/
 
 RUN python -m build --wheel --no-isolation --outdir /wheels
 
