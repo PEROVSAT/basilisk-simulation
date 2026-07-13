@@ -37,7 +37,7 @@ COPY messages/ messages/
 RUN python -m build --wheel --no-isolation --outdir /wheels
 
 # ── Stage 2: Basilisk runtime + perovsat plugin ───────────────────────────────
-FROM ghcr.io/avslab/basilisk:latest
+FROM ghcr.io/avslab/basilisk:v2.10.2
 
 # Restore pip (removed upstream as a size optimisation), install the plugin
 # wheel and any runtime Python dependencies.  pip is kept so new packages
