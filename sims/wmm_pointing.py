@@ -31,7 +31,7 @@ VIZARD_OUTPUT    = os.path.splitext(__file__)[0]
 # Path setup
 # ---------------------------------------------------------------------------
 
-_root = os.path.dirname(os.path.abspath(__file__))
+_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # project root
 sys.path.insert(0, os.path.join(_root, "PythonModules"))
 
 from issOrbit import set_iss_orbit  # noqa: E402
