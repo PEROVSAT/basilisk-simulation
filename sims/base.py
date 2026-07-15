@@ -142,7 +142,7 @@ def run():
     scStateRec = scObject.scStateOutMsg.recorder(rec_period)
     scSim.AddModelToTask("simTask", scStateRec)
 
-  if vizSupport.vizFound:
+  if vizSupport.vizFound :
     vizSupport.enableUnityVisualization(
         scSim,
         "simTask",
