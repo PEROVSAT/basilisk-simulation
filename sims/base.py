@@ -142,14 +142,13 @@ def run():
     scStateRec = scObject.scStateOutMsg.recorder(rec_period)
     scSim.AddModelToTask("simTask", scStateRec)
 
-    # Vizard — disabled for this long (18-day, 3.1M-step) headless analysis
-    # run. Writing a per-step binary Vizard frame for that many steps is an
-    # I/O bottleneck unrelated to the physics; use a short-duration run (see
-    # wmm_pointing.py / dampening_test.py) for actual Vizard playback.
-    if vizSupport.vizFound and os.environ.get("PEROVSAT_ENABLE_VIZ"):
-        vizSupport.enableUnityVisualization(
-            scSim, "simTask", scObject, saveFile=VIZARD_OUTPUT
-        )
+  if vizSupport.vizFound:
+    vizSupport.enableUnityVisualization(
+        scSim,
+        "simTask",
+        scObject,
+        saveFile=base_simulation
+    )
 
     scSim.InitializeSimulation()
     scSim.ConfigureStopTime(macros.sec2nano(SIM_DURATION_S))
