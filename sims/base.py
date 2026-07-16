@@ -138,17 +138,16 @@ def run():
     for rec in hystRecorders.values():
         scSim.AddModelToTask("simTask", rec)
 
+    
     # Spacecraft state recorder -> the real detumble curve (omega vs time)
     scStateRec = scObject.scStateOutMsg.recorder(rec_period)
     scSim.AddModelToTask("simTask", scStateRec)
-
-    # Vizard — disabled for this long (18-day, 3.1M-step) headless analysis
-    # run. Writing a per-step binary Vizard frame for that many steps is an
-    # I/O bottleneck unrelated to the physics; use a short-duration run (see
-    # wmm_pointing.py / dampening_test.py) for actual Vizard playback.
-    if vizSupport.vizFound and os.environ.get("PEROVSAT_ENABLE_VIZ"):
+    if vizSupport.vizFound:
         vizSupport.enableUnityVisualization(
-            scSim, "simTask", scObject, saveFile=VIZARD_OUTPUT
+            scSim,
+            "simTask",
+            scObject,
+            saveFile=VIZARD_OUTPUT
         )
 
     scSim.InitializeSimulation()
