@@ -138,17 +138,17 @@ def run():
     for rec in hystRecorders.values():
         scSim.AddModelToTask("simTask", rec)
 
+    
     # Spacecraft state recorder -> the real detumble curve (omega vs time)
     scStateRec = scObject.scStateOutMsg.recorder(rec_period)
     scSim.AddModelToTask("simTask", scStateRec)
     if vizSupport.vizFound:
-    vizSupport.enableUnityVisualization(
-        scSim,
-        "simTask",
-        scObject,
-        saveFile=VIZARD_OUTPUT
-    )
-
+        vizSupport.enableUnityVisualization(
+            scSim,
+            "simTask",
+            scObject,
+            saveFile=VIZARD_OUTPUT
+        )
 
     scSim.InitializeSimulation()
     scSim.ConfigureStopTime(macros.sec2nano(SIM_DURATION_S))
