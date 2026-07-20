@@ -45,7 +45,7 @@ bsk_add_swig_module(
   OUTPUT_DIR "${PLUGIN_PKG_DIR}"
 )
 
-# hyteresisRods — C++ StateEffector implementing the Jiles-Atherton hysteresis
+# hyteresisRods — C++ StateEffector implementing Flatley–Henretty hysteresis
 # rod model for passive magnetic attitude detumbling.
 bsk_add_swig_module(
   TARGET hyteresisRods

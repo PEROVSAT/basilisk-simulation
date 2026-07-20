@@ -1,10 +1,7 @@
 {
-  "_desc": "Narrow loop HyMu80 for z-axis libration damping",
-  "Ms": 1500000.0,
-  "a": 50.0,
-  "alpha": 0.001,
-  "k": 30.0,
-  "c": 0.2,
-  "M0": 0.0,
-  "deltaSmoothing": 0.1
+  "_desc": "Narrow-loop HyMu80 (z-axis libration damping). Effective as-installed Flatley-Henretty params with L/D demagnetization folded in.",
+  "Bs": 0.75,
+  "Br": 0.001,
+  "Hc": 5.0,
+  "M0": 0.0
 }

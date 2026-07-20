@@ -12,6 +12,13 @@
 #include <Eigen/Dense>
 #include <string>
 
+/*! @brief Hysteresis-rod StateEffector using the Flatley–Henretty model
+ *         in the Burton AAS 12-169 S-substitution form (p=2, q0=0).
+ *
+ *  Material parameters (Bs, Br, Hc) are *effective as-installed* values that
+ *  already fold in rod L/D demagnetization. The ODE state is the substituted
+ *  flux variable S = tan(π B / (2 Bs)).
+ */
 class HysteresisRods : public SysModel, public StateEffector {
 public:
     HysteresisRods();
@@ -44,26 +51,28 @@ public:
     Message<CmdTorqueBodyMsgPayload> torqueLogOutMsg;
     Message<HysteresisDebugMsgPayload> hysteresisDebugOutMsg;
 
-    // Jiles-Atherton material parameters
-    double Ms;     // [A/m]  Saturation magnetization
-    double a;      // [A/m]  Shape parameter
-    double alpha;  // [-]    Interdomain coupling coefficient
-    double k;      // [A/m]  Coercivity
-    double c;      // [-]    Reversibility
-    double M0;     // [A/m]  Initial magnetization
+    // Flatley–Henretty material parameters (effective / as-installed)
+    double Bs;     // [T]    Saturation flux density
+    double Br;     // [T]    Remanence flux density
+    double Hc;     // [A/m]  Coercivity
+    double M0;     // [A/m]  Initial magnetization (seeds S at Reset)
 
     // Rod geometry
-    Eigen::Vector3d u_B; 
-    double V;            
-    double Nd;     // [-]    Demagnetization factor
-
-    // Numerical smoothing
-    double deltaSmoothing;
+    Eigen::Vector3d u_B;
+    double V;
 
     BSKLogger bskLogger;
 
 private:
-    // ODE state for magnetization
+    // Cached shaping factor k = (1/Hc) tan(π Br / (2 Bs)), set in Reset
+    double kShape;
+
+    // Helpers
+    double fluxFromS(double S) const;
+    double magnetizationFromSB(double S, double H) const;
+    void projectS(double H, double& S) const;
+
+    // ODE state for substituted flux variable S [-]
     StateData* magState;
 
     // Linked spacecraft hub states
@@ -83,16 +92,13 @@ private:
     bool firstFieldRead;
     MagneticFieldMsgPayload magFieldMsgBuffer;
 
-    // Cached JA debug quantities
+    // Cached FH debug quantities
     double debug_H;
     double debug_Hdot;
-    double debug_Man;
-    double debug_He;
-    double debug_chi_irr;
-    double debug_dMdH;
+    double debug_B;
+    double debug_S;
+    double debug_dBdH;
     double debug_M;
-    
-    double lastDebugLogTime;
 };
 
 #endif

@@ -1,10 +1,7 @@
 {
-  "_desc": "Wide loop HyMu80 for rotisserie detumbling",
-  "Ms": 1500000.0,
-  "a": 50.0,
-  "alpha": 0.001,
-  "k": 80.0,
-  "c": 0.05,
-  "M0": 0.0,
-  "deltaSmoothing": 0.1
+  "_desc": "Wide-loop HyMu80 (rotisserie detumble). Effective as-installed Flatley-Henretty params with L/D demagnetization folded in.",
+  "Bs": 0.75,
+  "Br": 0.003,
+  "Hc": 15.0,
+  "M0": 0.0
 }
