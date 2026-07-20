@@ -1,9 +1,10 @@
 {
-  "_desc": "Wider loop to better dissipate, used for the rotisserie detumbling",
-  "Ms": 517000.0,
-  "a": 3.0,
-  "alpha": 0.0001,
-  "k": 2.0,
-  "c": 0.15,
-  "M0": 0.0
+  "_desc": "Wide loop HyMu80 for rotisserie detumbling",
+  "Ms": 1500000.0,
+  "a": 50.0,
+  "alpha": 0.001,
+  "k": 80.0,
+  "c": 0.05,
+  "M0": 0.0,
+  "deltaSmoothing": 0.1
 }

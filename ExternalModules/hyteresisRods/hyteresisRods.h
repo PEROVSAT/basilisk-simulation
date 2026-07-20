@@ -41,13 +41,13 @@ public:
 public:
     // Message interfaces
     ReadFunctor<MagneticFieldMsgPayload> magFieldInMsg;
-    Message<CmdTorqueBodyMsgPayload> torqueLogOutMsg;       // Logging/plotting only
+    Message<CmdTorqueBodyMsgPayload> torqueLogOutMsg;
     Message<HysteresisDebugMsgPayload> hysteresisDebugOutMsg;
 
     // Jiles-Atherton material parameters
     double Ms;     // [A/m]  Saturation magnetization
     double a;      // [A/m]  Shape parameter
-    double alpha;  // [-]    Interdomain coupling coefficient (Material)
+    double alpha;  // [-]    Interdomain coupling coefficient
     double k;      // [A/m]  Coercivity
     double c;      // [-]    Reversibility
     double M0;     // [A/m]  Initial magnetization
@@ -55,43 +55,35 @@ public:
     // Rod geometry
     Eigen::Vector3d u_B; 
     double V;            
-    double Nd;     // [-]    Demagnetization factor (Geometry)
+    double Nd;     // [-]    Demagnetization factor
 
-    // Numerical smoothing (set from Python; tunable)
-    double deltaSmoothing;  // [A/m/s] width of the tanh() used to smooth sgn(Hdot).
-                            //         Smaller => sharper switch (more physical, but
-                            //         more solver chatter). Larger => gentler switch.
+    // Numerical smoothing
+    double deltaSmoothing;
 
     BSKLogger bskLogger;
 
 private:
-    // ODE state for magnetization, owned and integrated by Basilisk
+    // ODE state for magnetization
     StateData* magState;
 
-    // Linked spacecraft hub states (set in linkInStates)
-    StateData* hubSigma;  // MRP attitude sigma_BN
-    StateData* hubOmega;  // Angular velocity omega_BN_B
+    // Linked spacecraft hub states
+    StateData* hubSigma;
+    StateData* hubOmega;
 
-    // Cached body-frame field, computed in updateContributions and reused
-    // in computeDerivatives (both are called within the same integrator sub-step)
+    // Cached body-frame field
     Eigen::Vector3d B_B_cached;
 
-    // Previous N-frame field and timestamp for computing dB_N/dt numerically
+    // Previous N-frame field and timestamp
     Eigen::Vector3d B_N_prev;
     double t_prev_s;
 
-    // Finite-difference inertial field rate dot{B}_N, updated once per discrete
-    // step in UpdateState and consumed inside computeDerivatives sub-steps.
+    // Finite-difference inertial field rate
     Eigen::Vector3d fieldInertialDot_N;
 
-    // True until the first field sample is captured, so we don't emit a spurious
-    // dot{B}_N spike on the first step (when B_N_prev is still zero-seeded).
     bool firstFieldRead;
-
-    // Most-recently read discrete field message
     MagneticFieldMsgPayload magFieldMsgBuffer;
 
-    // Cached JA debug quantities (updated in computeDerivatives, logged in UpdateState)
+    // Cached JA debug quantities
     double debug_H;
     double debug_Hdot;
     double debug_Man;
@@ -99,6 +91,8 @@ private:
     double debug_chi_irr;
     double debug_dMdH;
     double debug_M;
+    
+    double lastDebugLogTime;
 };
 
 #endif
