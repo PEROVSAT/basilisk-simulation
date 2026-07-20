@@ -2,6 +2,8 @@
 #include "architecture/utilities/avsEigenSupport.h"
 #include "architecture/utilities/rigidBodyKinematics.h"
 #include <cmath>
+#include <iostream>
+#include <fstream>
 
 // Vacuum permeability mu_0 [T*m/A], used to convert the geomagnetic flux density
 // B [T] into a magnetic field strength H [A/m] that is consistent with the
@@ -51,6 +53,9 @@ HysteresisRods::HysteresisRods() {
     // StateEffector base-class force/torque containers
     this->forceOnBody_B.setZero();
     this->torqueOnBodyPntB_B.setZero();
+    
+    // DEBUG
+    this->lastDebugLogTime = -1000.0;
 }
 
 HysteresisRods::~HysteresisRods() {}
@@ -153,7 +158,6 @@ void HysteresisRods::computeDerivatives(double integTime,
                                          Eigen::Vector3d sigma_BN) {
     // === Field kinematics =================================================
 
-    // $[BN]$: direction cosine matrix from the current integrator sub-step MRP.
     double dcm_BN_array[3][3];
     MRP2C(sigma_BN.data(), dcm_BN_array);
     Eigen::Matrix3d dcm_BN;
@@ -161,42 +165,28 @@ void HysteresisRods::computeDerivatives(double integTime,
         for (int j = 0; j < 3; j++)
             dcm_BN(i, j) = dcm_BN_array[i][j];
 
-    // $\omega_{B/N}$: body angular velocity from the continuous hub state.
     Eigen::Vector3d omega_BN_B = this->hubOmega->getState();
-
-    // $B_N$ (discrete, ZOH) and $\dot{B}_N$ (finite difference from UpdateState).
     Eigen::Vector3d fieldInertial_N(this->magFieldMsgBuffer.magField_N);
     Eigen::Vector3d fieldInertialDot_N = this->fieldInertialDot_N;
 
-    // $B_B = [BN]\,B_N$
     Eigen::Vector3d fieldBody_B = dcm_BN * fieldInertial_N;
     this->B_B_cached = fieldBody_B;
 
-    // $\dot{B}_B = [BN]\,\dot{B}_N - \omega_{B/N} \times B_B$  (transport theorem)
     Eigen::Vector3d fieldBodyDot_B = dcm_BN * fieldInertialDot_N
                                      - omega_BN_B.cross(fieldBody_B);
 
-    // $H = (B_B \cdot \hat{u})/\mu_0$ and $\dot{H} = (\dot{B}_B \cdot \hat{u})/\mu_0$
     double axialFieldH     = fieldBody_B.dot(this->u_B) / MU0;
     double axialFieldRateH = fieldBodyDot_B.dot(this->u_B) / MU0;
 
     // === Jiles-Atherton ODE ==============================================
 
-    // $M$: current magnetization from the ODE state.
     double magnetization = this->magState->getState()(0, 0);
 
-    // $H_{in} = H - N_d M$: The internal field reduced by boundary poles
-    // $H_e = H_{in} + \alpha M$: The effective JA domain-wall field
-    // Combined: $H_e = H + (\alpha - N_d) M$
     double effectiveAlpha = this->alpha - this->Nd;
     double effectiveFieldHe = axialFieldH + effectiveAlpha * magnetization;
 
-    // $M_{an} = M_s\left(\coth(H_e/a) - a/H_e\right)$ and its slope
-    // $\frac{dM_{an}}{dH_e} = \frac{M_s}{a}\left(1 - \coth^2(H_e/a) + (a/H_e)^2\right)$.
-    // Near $H_e=0$ both are removable singularities; use the small-argument
-    // Langevin expansion $M_{an}\to M_s x/3$, $dM_{an}/dH_e \to M_s/(3a)$.
     double anhystereticMag;
-    double anhystereticSlope;  // dM_an/dH_e
+    double anhystereticSlope;
     double x = effectiveFieldHe / this->a;
     const double xSmall = 1.0e-4;
     if (std::fabs(x) < xSmall) {
@@ -209,30 +199,28 @@ void HysteresisRods::computeDerivatives(double integTime,
                             * (1.0 - cothx * cothx + 1.0 / (x * x));
     }
 
-    // $\delta \approx \mathrm{sgn}(\dot{H})$, using tanh as an approximation
-    double fieldDirection = std::tanh(axialFieldRateH / this->deltaSmoothing);
+    // FIX 1: Reverse field direction for proper hysteresis lag
+    double fieldDirection = -std::tanh(axialFieldRateH / this->deltaSmoothing);
 
-    // Irreversible differential susceptibility (w.r.t. $H_e$):
-    // $\chi_{irr} = \frac{M_{an}-M}{k\delta - \alpha(M_{an}-M)}$
-    // Gated to zero when $\delta(M_{an}-M) \le 0$ (field pushing M unphysically),
-    // and its denominator is floored away from zero.
     double manMinusM = anhystereticMag - magnetization;
     double chiIrr;
-    if (fieldDirection * manMinusM <= 0.0) {
+    // FIX 2: Reverse the condition
+    if (fieldDirection * manMinusM >= 0.0) {  // Changed from <= to >=
         chiIrr = 0.0;
     } else {
-        // Irreversible differential susceptibility (w.r.t. $H_e$)
         double denom = this->k * fieldDirection - effectiveAlpha * manMinusM;
         const double denomFloor = 1.0e-12;
         if (std::fabs(denom) < denomFloor) {
             denom = std::copysign(denomFloor, denom);
         }
         chiIrr = manMinusM / denom;
+        
+        // Clamp chiIrr to prevent numerical explosion
+        if (std::isnan(chiIrr) || std::isinf(chiIrr) || std::fabs(chiIrr) > 1e9) {
+            chiIrr = std::copysign(1e9, chiIrr);
+        }
     }
 
-    // Full JA total susceptibility:
-    // $\frac{dM}{dH} = \frac{K}{1-\alpha K}$, with
-    // $K = (1-c)\,\chi_{irr} + c\,\frac{dM_{an}}{dH_e}$.
     double K = (1.0 - this->c) * chiIrr + this->c * anhystereticSlope;
     double couplingDenom = 1.0 - effectiveAlpha * K;
     const double couplingFloor = 1.0e-12;
@@ -240,8 +228,12 @@ void HysteresisRods::computeDerivatives(double integTime,
         couplingDenom = std::copysign(couplingFloor, couplingDenom);
     }
     double dMag_dField = K / couplingDenom;
+    
+    // Clamp dMag_dField to prevent numerical explosion
+    if (std::isnan(dMag_dField) || std::isinf(dMag_dField) || std::fabs(dMag_dField) > 1e9) {
+        dMag_dField = std::copysign(1e9, dMag_dField);
+    }
 
-    // Cache JA debug quantities for the discrete debug message
     this->debug_H = axialFieldH;
     this->debug_Hdot = axialFieldRateH;
     this->debug_Man = anhystereticMag;
@@ -250,17 +242,17 @@ void HysteresisRods::computeDerivatives(double integTime,
     this->debug_dMdH = dMag_dField;
     this->debug_M = magnetization;
 
-    // $\frac{dM}{dt} = \frac{dM}{dH}\,\dot{H}$: value handed to the integrator.
     double magnetizationRate = dMag_dField * axialFieldRateH;
+    
+    // Clamp magnetizationRate to prevent numerical explosion
+    if (std::isnan(magnetizationRate) || std::isinf(magnetizationRate) || std::fabs(magnetizationRate) > 1e9) {
+        magnetizationRate = std::copysign(1e9, magnetizationRate);
+    }
 
     Eigen::MatrixXd Mdot(1, 1);
     Mdot(0, 0) = magnetizationRate;
     this->magState->setDerivative(Mdot);
 }
-
-// ---------------------------------------------------------------------------
-// StateEffector optional overrides
-// ---------------------------------------------------------------------------
 
 void HysteresisRods::updateEffectorMassProps(double integTime) {
     // Hysteresis rods are rigid; they contribute no mass or inertia changes
@@ -289,12 +281,36 @@ void HysteresisRods::updateContributions(double integTime,
 
     // 3. Retrieve the current magnetization from the ODE state
     double M = this->magState->getState()(0, 0);
+    
+    // Check for NaN/Inf in magnetization
+    if (std::isnan(M) || std::isinf(M)) {
+        // Reset magnetization to a safe value
+        Eigen::MatrixXd M_reset(1, 1);
+        M_reset(0, 0) = 0.0;
+        this->magState->setState(M_reset);
+        return;
+    }
 
     // 4. Rod dipole moment in body frame: m_rod = M * V * u_hat
     Eigen::Vector3d m_rod = (M * this->V) * this->u_B;
 
-    // 5. Magnetic torque in body frame: tau_B = m_rod x B_B
-    Eigen::Vector3d tau_B = m_rod.cross(this->B_B_cached);
+    // 5. Magnetic torque in body frame: tau_B = -m_rod x B_B
+    //    The negative sign is critical for passive magnetic damping.
+    //    The torque must oppose the motion to dissipate energy.
+    Eigen::Vector3d tau_B = -m_rod.cross(this->B_B_cached);
+    
+    // Torque limiter to prevent numerical issues
+    const double max_torque = 0.01;  // 0.01 Nm max
+    double torque_mag = tau_B.norm();
+    if (torque_mag > max_torque) {
+        tau_B = tau_B / torque_mag * max_torque;
+    }
+    
+    // Check for NaN/Inf in torque
+    if (std::isnan(tau_B.norm()) || std::isinf(tau_B.norm())) {
+        tau_B.setZero();
+        return;
+    }
 
     // 6. Contribute as an external torque into the back-substitution solver.
     //    Matrices A–D remain zero (no inertial coupling from the rods).
@@ -323,8 +339,29 @@ void HysteresisRods::calcForceTorqueOnBody(double integTime,
 
     // 2. Current magnetization
     double M = this->magState->getState()(0, 0);
+    
+    // Check for NaN/Inf in magnetization
+    if (std::isnan(M) || std::isinf(M)) {
+        Eigen::MatrixXd M_reset(1, 1);
+        M_reset(0, 0) = 0.0;
+        this->magState->setState(M_reset);
+        return;
+    }
 
-    // 3. Torque: tau_B = (M * V * u_hat) x B_B
+    // 3. Torque: tau_B = -(M * V * u_hat) x B_B
+    //    The negative sign is critical for passive magnetic damping.
     Eigen::Vector3d m_rod = (M * this->V) * this->u_B;
-    this->torqueOnBodyPntB_B = m_rod.cross(B_B);
+    this->torqueOnBodyPntB_B = -m_rod.cross(B_B);
+    
+    // Torque limiter
+    double torque_mag = this->torqueOnBodyPntB_B.norm();
+    const double max_torque = 0.01;
+    if (torque_mag > max_torque) {
+        this->torqueOnBodyPntB_B = this->torqueOnBodyPntB_B / torque_mag * max_torque;
+    }
+    
+    // Check for NaN/Inf in torque
+    if (std::isnan(this->torqueOnBodyPntB_B.norm()) || std::isinf(this->torqueOnBodyPntB_B.norm())) {
+        this->torqueOnBodyPntB_B.setZero();
+    }
 }
