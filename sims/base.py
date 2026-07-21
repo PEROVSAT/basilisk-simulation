@@ -4,7 +4,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 from Basilisk import __path__
-from Basilisk.simulation import magneticFieldWMM, spacecraft
+from Basilisk.simulation import magneticFieldWMM, spacecraft, svIntegrators
 from Basilisk.utilities import SimulationBaseClass, macros, simIncludeGravBody, vizSupport
 from Basilisk.utilities.supportDataTools.dataFetcher import DataFile, get_path
 
@@ -36,9 +36,10 @@ OMEGA_INIT_RADS  = [[0.05], [0.07], [0.02]]
 
 DIPOLE_BODY_AM2  = np.array([0.0, 0.0, 0.15])
 
-# ---- REVERTED to proven rod size ----
+# ---- 1U CubeSat envelope constraint: rods must fit within a 100mm cube,
+# so max usable length is ~95mm (leaves a few mm of installation margin). ----
 ROD_DIAMETER_M   = 0.010   # 10 mm
-ROD_LENGTH_M     = 0.200   # 200 mm
+ROD_LENGTH_M     = 0.095   # 95 mm (was 200mm -- too long for a 1U bus)
 
 # ---- Choose duration here ----
 # For 1‑hour test:
@@ -47,9 +48,9 @@ ROD_LENGTH_M     = 0.200   # 200 mm
 # RECORD_PERIOD_S = 1.0
 
 # For 18‑day run:
-SIM_DURATION_S   = 3600.0 * 24 * 18   # 18 days
-TIMESTEP_S       = 0.5                # stable
-RECORD_PERIOD_S  = 60.0               # record every minute
+SIM_DURATION_S   = 3600.0 * 24 * 50
+TIMESTEP_S       = 5
+RECORD_PERIOD_S  = 60.0
 
 VIZARD_OUTPUT    = os.path.splitext(__file__)[0]
 
@@ -74,6 +75,14 @@ def run():
     scObject.hub.IHubPntBc_B = INERTIA_KGM2
     scObject.hub.sigma_BNInit = SIGMA_INIT
     scObject.hub.omega_BN_BInit = OMEGA_INIT_RADS
+    # Adaptive (error-tolerance-controlled) integrator instead of fixed-step
+    # RK4: sub-steps internally between task ticks so integration accuracy
+    # is decoupled from TIMESTEP_S (see DEBUGGING.md #12). Must keep a
+    # persistent Python reference -- SWIG does not keep this object alive
+    # on its own, and an inline temporary gets GC'd before ExecuteSimulation
+    # runs, leaving scObject with a dangling integrator pointer (segfault).
+    integrator = svIntegrators.svIntegratorRKF45(scObject)
+    scObject.setIntegrator(integrator)
     scSim.AddModelToTask("simTask", scObject)
 
     # Earth gravity & Orbit
@@ -226,7 +235,7 @@ def plot_hysteresis_loops(hystRecorders, filename="hysteresis_loop.png"):
         ax.grid(True, linestyle='--', alpha=0.7)
         ax.legend()
 
-    fig.suptitle("Jiles-Atherton Hysteresis Loops")
+    fig.suptitle("Flatley-Henretty Hysteresis Loops")
     plt.tight_layout()
     plt.savefig(filename, dpi=200)
     plt.close(fig)

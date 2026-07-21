@@ -2,33 +2,26 @@
 #include "architecture/utilities/avsEigenSupport.h"
 #include "architecture/utilities/rigidBodyKinematics.h"
 #include <cmath>
-#include <iostream>
-#include <fstream>
 
-// Vacuum permeability mu_0 [T*m/A], used to convert the geomagnetic flux density
-// B [T] into a magnetic field strength H [A/m] that is consistent with the
-// Jiles-Atherton parameters a and k (which are expressed in A/m).
+// Vacuum permeability mu_0 [T*m/A]
 static const double MU0 = 1.25663706212e-6;
+static const double PI = 3.14159265358979323846;
 
 // ---------------------------------------------------------------------------
 // Construction / destruction
 // ---------------------------------------------------------------------------
 
 HysteresisRods::HysteresisRods() {
-    // Jiles-Atherton parameters — safe defaults until overridden from Python
-    this->Ms    = 0.0;
-    this->a     = 1.0;   // Avoid divide-by-zero in Langevin function
-    this->alpha = 0.0;
-    this->k     = 1.0;   // Avoid divide-by-zero in dM/dH
-    this->c     = 0.0;
-    this->M0    = 0.0;
+    // Flatley–Henretty parameters — safe defaults until overridden from Python
+    this->Bs = 0.75;
+    this->Br = 0.001;
+    this->Hc = 5.0;
+    this->M0 = 0.0;
+    this->kShape = 0.0;
 
     // Rod geometry
     this->u_B.setZero();
     this->V = 0.0;
-
-    // Numerical smoothing default (A/m/s); override from Python if needed
-    this->deltaSmoothing = 0.1;
 
     // Internal pointers
     this->magState = nullptr;
@@ -45,20 +38,40 @@ HysteresisRods::HysteresisRods() {
     // Debug payload defaults
     this->debug_H = 0.0;
     this->debug_Hdot = 0.0;
-    this->debug_Man = 0.0;
-    this->debug_He = 0.0;
-    this->debug_chi_irr = 0.0;
-    this->debug_dMdH = 0.0;
+    this->debug_B = 0.0;
+    this->debug_S = 0.0;
+    this->debug_dBdH = 0.0;
+    this->debug_M = 0.0;
 
     // StateEffector base-class force/torque containers
     this->forceOnBody_B.setZero();
     this->torqueOnBodyPntB_B.setZero();
-    
-    // DEBUG
-    this->lastDebugLogTime = -1000.0;
 }
 
 HysteresisRods::~HysteresisRods() {}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+double HysteresisRods::fluxFromS(double S) const {
+    return (2.0 * this->Bs / PI) * std::atan(S);
+}
+
+double HysteresisRods::magnetizationFromSB(double S, double H) const {
+    return this->fluxFromS(S) / MU0 - H;
+}
+
+void HysteresisRods::projectS(double H, double& S) const {
+    // Bound S to the major-loop strip [k(H−Hc), k(H+Hc)] (Burton AAS 12-169).
+    const double S_lo = this->kShape * (H - this->Hc);
+    const double S_hi = this->kShape * (H + this->Hc);
+    if (S < S_lo) {
+        S = S_lo;
+    } else if (S > S_hi) {
+        S = S_hi;
+    }
+}
 
 // ---------------------------------------------------------------------------
 // SysModel interface
@@ -69,9 +82,17 @@ void HysteresisRods::Reset(uint64_t CurrentSimNanos) {
         this->bskLogger.bskLog(BSK_ERROR,
             "HysteresisRods: magFieldInMsg is not linked.");
     }
-    if (this->Ms <= 0.0) {
+    if (this->Bs <= 0.0) {
         this->bskLogger.bskLog(BSK_WARNING,
-            "HysteresisRods: Ms (saturation magnetization) is not set.");
+            "HysteresisRods: Bs (saturation flux density) is not set.");
+    }
+    if (this->Br <= 0.0 || this->Br >= this->Bs) {
+        this->bskLogger.bskLog(BSK_WARNING,
+            "HysteresisRods: Br must satisfy 0 < Br < Bs.");
+    }
+    if (this->Hc <= 0.0) {
+        this->bskLogger.bskLog(BSK_WARNING,
+            "HysteresisRods: Hc (coercivity) is not set.");
     }
     if (this->V <= 0.0) {
         this->bskLogger.bskLog(BSK_WARNING,
@@ -82,17 +103,30 @@ void HysteresisRods::Reset(uint64_t CurrentSimNanos) {
             "HysteresisRods: u_B does not appear to be a unit vector.");
     }
 
-    // Seed the field-derivative tracker so the first dB/dt estimate is valid
+    // Shaping factor k = (1/Hc) tan(π Br / (2 Bs))
+    this->kShape = (1.0 / this->Hc)
+                   * std::tan((PI / 2.0) * (this->Br / this->Bs));
+
+    // Seed field-derivative tracker
     this->B_N_prev.setZero();
     this->t_prev_s = CurrentSimNanos * 1.0e-9;
     this->fieldInertialDot_N.setZero();
     this->firstFieldRead = true;
 
-    // Initialise the ODE state to M0
+    // Initialise the ODE state S from M0 (at H ≈ 0).
+    // S = tan(π B / (2 Bs)) with B = μ0 (H + M0) ≈ μ0 M0.
     if (this->magState != nullptr) {
-        Eigen::MatrixXd M_init(1, 1);
-        M_init(0, 0) = this->M0;
-        this->magState->setState(M_init);
+        double B_seed = MU0 * this->M0;
+        const double B_cap = 0.999 * this->Bs;
+        if (B_seed > B_cap) {
+            B_seed = B_cap;
+        } else if (B_seed < -B_cap) {
+            B_seed = -B_cap;
+        }
+        double S0 = std::tan((PI / 2.0) * (B_seed / this->Bs));
+        Eigen::MatrixXd S_init(1, 1);
+        S_init(0, 0) = S0;
+        this->magState->setState(S_init);
     }
 }
 
@@ -102,14 +136,11 @@ void HysteresisRods::UpdateState(uint64_t CurrentSimNanos) {
         this->magFieldMsgBuffer = this->magFieldInMsg();
     }
 
-    // Update the inertial-field finite difference:  $\dot{B}_N \approx \frac{B_N(t) - B_N(t_{prev})}{t - t_{prev}}$
-    // The WMM field is zero-order-held between task steps, so evaluating this once
-    // per discrete step (rather than per integrator sub-step) is the correct rate.
+    // Inertial-field finite difference (ZOH WMM → rate once per discrete step)
     double t_now_s = CurrentSimNanos * 1.0e-9;
     double dt_s = t_now_s - this->t_prev_s;
     Eigen::Vector3d fieldInertial_N(this->magFieldMsgBuffer.magField_N);
     if (this->firstFieldRead || dt_s <= 0.0) {
-        // First sample (or non-advancing time): no valid rate yet, avoid a spike
         this->fieldInertialDot_N.setZero();
         this->firstFieldRead = false;
     } else {
@@ -118,19 +149,37 @@ void HysteresisRods::UpdateState(uint64_t CurrentSimNanos) {
     this->B_N_prev = fieldInertial_N;
     this->t_prev_s = t_now_s;
 
-    // Write current torque for logging / plotting
+    // Project S onto the major-loop strip at the settled attitude / field
+    if (this->magState != nullptr && this->hubSigma != nullptr) {
+        Eigen::Vector3d sigma_BN = this->hubSigma->getState();
+        double dcm_BN_array[3][3];
+        MRP2C(sigma_BN.data(), dcm_BN_array);
+        Eigen::Matrix3d dcm_BN;
+        for (int i = 0; i < 3; i++)
+            for (int j = 0; j < 3; j++)
+                dcm_BN(i, j) = dcm_BN_array[i][j];
+        Eigen::Vector3d B_B = dcm_BN * fieldInertial_N;
+        double H = B_B.dot(this->u_B) / MU0;
+
+        double S = this->magState->getState()(0, 0);
+        this->projectS(H, S);
+        Eigen::MatrixXd S_proj(1, 1);
+        S_proj(0, 0) = S;
+        this->magState->setState(S_proj);
+    }
+
+    // Torque log
     CmdTorqueBodyMsgPayload torqueMsg = {};
     eigenVector3d2CArray(this->torqueOnBodyPntB_B, torqueMsg.torqueRequestBody);
     this->torqueLogOutMsg.write(&torqueMsg, this->moduleID, CurrentSimNanos);
 
-    // Write JA internal state for debug logging
+    // FH debug state
     HysteresisDebugMsgPayload debugMsg = {};
     debugMsg.H = this->debug_H;
     debugMsg.Hdot = this->debug_Hdot;
-    debugMsg.Man = this->debug_Man;
-    debugMsg.He = this->debug_He;
-    debugMsg.chi_irr = this->debug_chi_irr;
-    debugMsg.dMdH = this->debug_dMdH;
+    debugMsg.B = this->debug_B;
+    debugMsg.S = this->debug_S;
+    debugMsg.dBdH = this->debug_dBdH;
     debugMsg.M = this->debug_M;
     this->hysteresisDebugOutMsg.write(&debugMsg, this->moduleID, CurrentSimNanos);
 }
@@ -140,14 +189,11 @@ void HysteresisRods::UpdateState(uint64_t CurrentSimNanos) {
 // ---------------------------------------------------------------------------
 
 void HysteresisRods::registerStates(DynParamManager& states) {
-    // Register a 1×1 state for the scalar magnetization M [A/m].
-    // Using ModelTag keeps the name unique when multiple instances are attached.
-    this->magState = states.registerState(1, 1, "hysteresisM_" + this->ModelTag);
+    // Register a 1×1 state for the substituted flux variable S [-].
+    this->magState = states.registerState(1, 1, "hysteresisS_" + this->ModelTag);
 }
 
 void HysteresisRods::linkInStates(DynParamManager& states) {
-    // stateNameOfSigma / stateNameOfOmega are protected StateEffector members
-    // automatically set (and spacecraft-prefixed) when the effector is attached.
     this->hubSigma = states.getStateObject(this->stateNameOfSigma);
     this->hubOmega = states.getStateObject(this->stateNameOfOmega);
 }
@@ -178,84 +224,62 @@ void HysteresisRods::computeDerivatives(double integTime,
     double axialFieldH     = fieldBody_B.dot(this->u_B) / MU0;
     double axialFieldRateH = fieldBodyDot_B.dot(this->u_B) / MU0;
 
-    // === Jiles-Atherton ODE ==============================================
+    // === Flatley–Henretty / Burton S-ODE ==================================
 
-    double magnetization = this->magState->getState()(0, 0);
+    // computeDerivatives is called once per RK4 stage (k1..k4) with a
+    // sub-step state the integrator constructed. It MUST behave as a pure
+    // function of that state: calling magState->setState(...) here would
+    // silently overwrite the integrator's sub-step value in place, so later
+    // stages build their increments on a state the integrator never asked
+    // for. Any out-of-strip correction belongs in UpdateState (once per full
+    // discrete step, via projectS), not here.
+    //
+    // No explicit "snap" is needed regardless: if S sits outside the strip,
+    // the f-clamp below saturates dS/dH toward the value that pulls S back
+    // in (or, if H is moving away, holds dS/dH at 0 until the strip catches
+    // up to S), so the ODE is self-correcting.
+    double S = this->magState->getState()(0, 0);
 
-    double effectiveAlpha = this->alpha - this->Nd;
-    double effectiveFieldHe = axialFieldH + effectiveAlpha * magnetization;
-
-    double anhystereticMag;
-    double anhystereticSlope;
-    double x = effectiveFieldHe / this->a;
-    const double xSmall = 1.0e-4;
-    if (std::fabs(x) < xSmall) {
-        anhystereticMag   = this->Ms * x / 3.0;
-        anhystereticSlope = this->Ms / (3.0 * this->a);
+    double sigma;
+    if (axialFieldRateH > 0.0) {
+        sigma = 1.0;
+    } else if (axialFieldRateH < 0.0) {
+        sigma = -1.0;
     } else {
-        double cothx = 1.0 / std::tanh(x);
-        anhystereticMag   = this->Ms * (cothx - 1.0 / x);
-        anhystereticSlope = (this->Ms / this->a)
-                            * (1.0 - cothx * cothx + 1.0 / (x * x));
+        sigma = 0.0;
     }
 
-    // FIX 1: Reverse field direction for proper hysteresis lag
-    double fieldDirection = -std::tanh(axialFieldRateH / this->deltaSmoothing);
-
-    double manMinusM = anhystereticMag - magnetization;
-    double chiIrr;
-    // FIX 2: Reverse the condition
-    if (fieldDirection * manMinusM >= 0.0) {  // Changed from <= to >=
-        chiIrr = 0.0;
-    } else {
-        double denom = this->k * fieldDirection - effectiveAlpha * manMinusM;
-        const double denomFloor = 1.0e-12;
-        if (std::fabs(denom) < denomFloor) {
-            denom = std::copysign(denomFloor, denom);
-        }
-        chiIrr = manMinusM / denom;
-        
-        // Clamp chiIrr to prevent numerical explosion
-        if (std::isnan(chiIrr) || std::isinf(chiIrr) || std::fabs(chiIrr) > 1e9) {
-            chiIrr = std::copysign(1e9, chiIrr);
-        }
+    // f = 1 on the active boundary, 0 on the opposite boundary
+    double f = (sigma * (axialFieldH - S / this->kShape) + this->Hc)
+               / (2.0 * this->Hc);
+    if (f < 0.0) {
+        f = 0.0;
+    } else if (f > 1.0) {
+        f = 1.0;
     }
 
-    double K = (1.0 - this->c) * chiIrr + this->c * anhystereticSlope;
-    double couplingDenom = 1.0 - effectiveAlpha * K;
-    const double couplingFloor = 1.0e-12;
-    if (std::fabs(couplingDenom) < couplingFloor) {
-        couplingDenom = std::copysign(couplingFloor, couplingDenom);
-    }
-    double dMag_dField = K / couplingDenom;
-    
-    // Clamp dMag_dField to prevent numerical explosion
-    if (std::isnan(dMag_dField) || std::isinf(dMag_dField) || std::fabs(dMag_dField) > 1e9) {
-        dMag_dField = std::copysign(1e9, dMag_dField);
-    }
+    double dSdH = this->kShape * f * f;
+    double Sdot = dSdH * axialFieldRateH;
+
+    // Recover B, dB/dH, M for debug
+    double B_rod = this->fluxFromS(S);
+    double dBdS = (2.0 * this->Bs / PI) / (1.0 + S * S);
+    double dBdH = dBdS * dSdH;
+    double M = B_rod / MU0 - axialFieldH;
 
     this->debug_H = axialFieldH;
     this->debug_Hdot = axialFieldRateH;
-    this->debug_Man = anhystereticMag;
-    this->debug_He = effectiveFieldHe;
-    this->debug_chi_irr = chiIrr;
-    this->debug_dMdH = dMag_dField;
-    this->debug_M = magnetization;
+    this->debug_B = B_rod;
+    this->debug_S = S;
+    this->debug_dBdH = dBdH;
+    this->debug_M = M;
 
-    double magnetizationRate = dMag_dField * axialFieldRateH;
-    
-    // Clamp magnetizationRate to prevent numerical explosion
-    if (std::isnan(magnetizationRate) || std::isinf(magnetizationRate) || std::fabs(magnetizationRate) > 1e9) {
-        magnetizationRate = std::copysign(1e9, magnetizationRate);
-    }
-
-    Eigen::MatrixXd Mdot(1, 1);
-    Mdot(0, 0) = magnetizationRate;
-    this->magState->setDerivative(Mdot);
+    Eigen::MatrixXd SdotMat(1, 1);
+    SdotMat(0, 0) = Sdot;
+    this->magState->setDerivative(SdotMat);
 }
 
 void HysteresisRods::updateEffectorMassProps(double integTime) {
-    // Hysteresis rods are rigid; they contribute no mass or inertia changes
     return;
 }
 
@@ -264,10 +288,6 @@ void HysteresisRods::updateContributions(double integTime,
                                           Eigen::Vector3d sigma_BN,
                                           Eigen::Vector3d omega_BN_B,
                                           Eigen::Vector3d g_N) {
-    // Called at every integrator sub-step with the current continuous states.
-    // This is where the torque enters the spacecraft equations of motion.
-
-    // 1. Build [BN] from the sub-step MRP attitude
     double dcm_BN_array[3][3];
     MRP2C(sigma_BN.data(), dcm_BN_array);
     Eigen::Matrix3d dcm_BN;
@@ -275,56 +295,38 @@ void HysteresisRods::updateContributions(double integTime,
         for (int j = 0; j < 3; j++)
             dcm_BN(i, j) = dcm_BN_array[i][j];
 
-    // 2. Rotate the discrete inertial field into the body frame
     Eigen::Vector3d B_N(this->magFieldMsgBuffer.magField_N);
     this->B_B_cached = dcm_BN * B_N;
 
-    // 3. Retrieve the current magnetization from the ODE state
-    double M = this->magState->getState()(0, 0);
-    
-    // Check for NaN/Inf in magnetization
+    double H = this->B_B_cached.dot(this->u_B) / MU0;
+    double S = this->magState->getState()(0, 0);
+    this->projectS(H, S);
+
+    double M = this->magnetizationFromSB(S, H);
     if (std::isnan(M) || std::isinf(M)) {
-        // Reset magnetization to a safe value
-        Eigen::MatrixXd M_reset(1, 1);
-        M_reset(0, 0) = 0.0;
-        this->magState->setState(M_reset);
+        Eigen::MatrixXd S_reset(1, 1);
+        S_reset(0, 0) = this->kShape * H;
+        this->magState->setState(S_reset);
         return;
     }
 
-    // 4. Rod dipole moment in body frame: m_rod = M * V * u_hat
     Eigen::Vector3d m_rod = (M * this->V) * this->u_B;
+    // Passive dipole torque; passive damping comes from M lagging H.
+    Eigen::Vector3d tau_B = m_rod.cross(this->B_B_cached);
 
-    // 5. Magnetic torque in body frame: tau_B = -m_rod x B_B
-    //    The negative sign is critical for passive magnetic damping.
-    //    The torque must oppose the motion to dissipate energy.
-    Eigen::Vector3d tau_B = -m_rod.cross(this->B_B_cached);
-    
-    // Torque limiter to prevent numerical issues
-    const double max_torque = 0.01;  // 0.01 Nm max
-    double torque_mag = tau_B.norm();
-    if (torque_mag > max_torque) {
-        tau_B = tau_B / torque_mag * max_torque;
-    }
-    
-    // Check for NaN/Inf in torque
     if (std::isnan(tau_B.norm()) || std::isinf(tau_B.norm())) {
         tau_B.setZero();
         return;
     }
 
-    // 6. Contribute as an external torque into the back-substitution solver.
-    //    Matrices A–D remain zero (no inertial coupling from the rods).
     backSubContr.vecRot += tau_B;
 }
 
 void HysteresisRods::calcForceTorqueOnBody(double integTime,
                                             Eigen::Vector3d omega_BN_B) {
-    // Called once per discrete timestep after integration completes.
-    // Recompute the torque from the settled state for logging/output purposes.
     this->forceOnBody_B.setZero();
     this->torqueOnBodyPntB_B.setZero();
 
-    // 1. Settled attitude from the fully integrated state
     Eigen::Vector3d sigma_BN = this->hubSigma->getState();
 
     double dcm_BN_array[3][3];
@@ -337,31 +339,23 @@ void HysteresisRods::calcForceTorqueOnBody(double integTime,
     Eigen::Vector3d B_N(this->magFieldMsgBuffer.magField_N);
     Eigen::Vector3d B_B = dcm_BN * B_N;
 
-    // 2. Current magnetization
-    double M = this->magState->getState()(0, 0);
-    
-    // Check for NaN/Inf in magnetization
+    double H = B_B.dot(this->u_B) / MU0;
+    double S = this->magState->getState()(0, 0);
+    this->projectS(H, S);
+
+    double M = this->magnetizationFromSB(S, H);
     if (std::isnan(M) || std::isinf(M)) {
-        Eigen::MatrixXd M_reset(1, 1);
-        M_reset(0, 0) = 0.0;
-        this->magState->setState(M_reset);
+        Eigen::MatrixXd S_reset(1, 1);
+        S_reset(0, 0) = this->kShape * H;
+        this->magState->setState(S_reset);
         return;
     }
 
-    // 3. Torque: tau_B = -(M * V * u_hat) x B_B
-    //    The negative sign is critical for passive magnetic damping.
     Eigen::Vector3d m_rod = (M * this->V) * this->u_B;
-    this->torqueOnBodyPntB_B = -m_rod.cross(B_B);
-    
-    // Torque limiter
-    double torque_mag = this->torqueOnBodyPntB_B.norm();
-    const double max_torque = 0.01;
-    if (torque_mag > max_torque) {
-        this->torqueOnBodyPntB_B = this->torqueOnBodyPntB_B / torque_mag * max_torque;
-    }
-    
-    // Check for NaN/Inf in torque
-    if (std::isnan(this->torqueOnBodyPntB_B.norm()) || std::isinf(this->torqueOnBodyPntB_B.norm())) {
+    this->torqueOnBodyPntB_B = m_rod.cross(B_B);
+
+    if (std::isnan(this->torqueOnBodyPntB_B.norm())
+        || std::isinf(this->torqueOnBodyPntB_B.norm())) {
         this->torqueOnBodyPntB_B.setZero();
     }
 }
