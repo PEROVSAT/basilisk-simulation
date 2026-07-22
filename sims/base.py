@@ -4,8 +4,9 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 from Basilisk import __path__
+from Basilisk.architecture import sysModel
 from Basilisk.simulation import magneticFieldWMM, spacecraft, svIntegrators
-from Basilisk.utilities import SimulationBaseClass, macros, simIncludeGravBody, vizSupport
+from Basilisk.utilities import SimulationBaseClass, macros, vizSupport
 from Basilisk.utilities.supportDataTools.dataFetcher import DataFile, get_path
 
 # ---------------------------------------------------------------------------
@@ -22,6 +23,7 @@ except ImportError as exc:
 
 from issOrbit import set_iss_orbit
 from hysteresisFactory import HysteresisFactory
+from solarSystemFactory import setup_solar_system, wire_wmm_epoch
 
 # ---------------------------------------------------------------------------
 # Key parameters
@@ -36,10 +38,31 @@ OMEGA_INIT_RADS  = [[0.05], [0.07], [0.02]]
 
 DIPOLE_BODY_AM2  = np.array([0.0, 0.0, 0.15])
 
-# ---- 1U CubeSat envelope constraint: rods must fit within a 100mm cube,
-# so max usable length is ~95mm (leaves a few mm of installation margin). ----
-ROD_DIAMETER_M   = 0.010   # 10 mm
-ROD_LENGTH_M     = 0.095   # 95 mm (was 200mm -- too long for a 1U bus)
+# Real UTC epoch the sim starts at -- drives Earth's rotational phase (and
+# therefore which longitude the orbit's initial true anomaly sits over) and
+# the WMM secular-variation date, via solarSystemFactory.py. Swap between the
+# two presets below to compare a summer vs. winter launch; same year, so the
+# dominant difference is Earth's rotation state at insertion rather than WMM
+# secular drift (that term matters more for epochs years apart).
+EPOCH_UTC_SUMMER = "2026 JUN 21 12:00:00.0 (UTC)"
+EPOCH_UTC_WINTER = "2026 DEC 21 12:00:00.0 (UTC)"
+EPOCH_UTC        = EPOCH_UTC_SUMMER
+
+# 8-rod HyMu80 PMAC layout. Must fit a 1U (100mm) envelope. The prior 10mm
+# diameter gave L/D=9.5, BELOW the L/D>10 threshold that
+# hysteresisFactory.calculate_geometry()'s own Bozorth demagnetization-factor
+# formula warns is required for validity -- Nd swings by ~13x between
+# L/D=9.5 and L/D=47.5 (0.0216 -> 0.0016), so a sub-10 ratio isn't just
+# "less accurate," it's outside the regime the approximation is for. 2mm
+# also matches realistic HyMu80 flight-hardware proportions (thin, long
+# rods) much better than 10mm did.
+# NOTE: the hysteresis_configs/*.json Bs/Br/Hc values are labeled "effective
+# as-installed" for demagnetization but the Flatley-Henretty model doesn't
+# runtime-correct them from Nd (see hysteresisFactory.py) -- they weren't
+# re-derived for this geometry, so treat them as provisional too.
+ROD_DIAMETER_M   = 0.002   # 2 mm
+ROD_LENGTH_M     = 0.095   # 95 mm (200mm was checked in at one point and
+                            # physically cannot fit a 1U bus)
 
 # ---- Choose duration here ----
 # For 1‑hour test:
@@ -52,6 +75,10 @@ SIM_DURATION_S   = 3600.0 * 24 * 50
 TIMESTEP_S       = 5
 RECORD_PERIOD_S  = 60.0
 
+# Console print period for the OrientationMonitor — coarse on purpose so the
+# 18-day run doesn't spam stdout.
+PRINT_PERIOD_S   = 3600.0
+
 VIZARD_OUTPUT    = os.path.splitext(__file__)[0]
 
 _configs_dir = os.path.join(_root, "hysteresis_configs")
@@ -59,6 +86,33 @@ Z_JSON  = os.path.join(_configs_dir, "hymu80_z_axis.json")
 XY_JSON = os.path.join(_configs_dir, "hymu80_xy_axis.json")
 
 INV_SQRT2 = 0.70710678118654752
+
+
+class OrientationMonitor(sysModel.SysModel):
+    """
+    Prints sim time and attitude MRP (sigma_BN) to the console on its own
+    coarse task. Independent of Vizard, so the console trace can be diffed
+    against Vizard's playback to isolate whether an orientation discrepancy
+    is in the dynamics or in Vizard's rendering.
+    """
+
+    def __init__(self, scStateOutMsg):
+        super().__init__()
+        self.ModelTag = "OrientationMonitor"
+        self.scStateOutMsg = scStateOutMsg
+
+    def UpdateState(self, currentSimNanos):
+        state = self.scStateOutMsg.read()
+        t_s = currentSimNanos * macros.NANO2SEC
+        sigma = state.sigma_BN
+        omega = state.omega_BN_B
+        omega_deg = np.degrees(omega)
+        omega_mag_deg = np.degrees(np.linalg.norm(omega))
+        print(
+            f"t={t_s:10.1f}s  sigma_BN=[{sigma[0]:+.4f}, {sigma[1]:+.4f}, {sigma[2]:+.4f}]"
+            f"  omega_BN_B=[{omega_deg[0]:+.4f}, {omega_deg[1]:+.4f}, {omega_deg[2]:+.4f}] deg/s"
+            f"  |omega|={omega_mag_deg:.4f} deg/s"
+        )
 
 
 def run():
@@ -85,18 +139,18 @@ def run():
     scObject.setIntegrator(integrator)
     scSim.AddModelToTask("simTask", scObject)
 
-    # Earth gravity & Orbit
-    gravFactory = simIncludeGravBody.gravBodyFactory()
-    planet = gravFactory.createEarth()
-    planet.isCentralBody = True
-    gravFactory.addBodiesTo(scObject)
-    set_iss_orbit(scObject, planet.mu)
+    # Solar system gravity (Earth + Sun), anchored to a real UTC epoch so
+    # Earth's rotational phase at insertion -- and hence the WMM field trace
+    # along the orbit -- reflects the actual launch date.
+    gravFactory, spiceObject = setup_solar_system(scSim, scObject, "simTask", EPOCH_UTC)
+    set_iss_orbit(scObject, gravFactory.gravBodies["earth"].mu)
 
     # WMM
     magModule = magneticFieldWMM.MagneticFieldWMM()
     magModule.ModelTag = "WMM"
     magModule.configureWMMFile(str(get_path(DataFile.MagneticFieldData.WMM)))
     magModule.addSpacecraftToModel(scObject.scStateOutMsg)
+    wire_wmm_epoch(magModule, gravFactory, spiceObject)
     scSim.AddModelToTask("simTask", magModule)
 
     rec_period = macros.sec2nano(RECORD_PERIOD_S)
@@ -163,12 +217,19 @@ def run():
     pmTorqueRec = permMagnet.cmdTorqueOutMsg.recorder(rec_period)
     scSim.AddModelToTask("simTask", pmTorqueRec)
 
-    if vizSupport.vizFound:
+    # Console orientation/timestamp monitor, on its own coarse task so it
+    # doesn't run 3.1M times over the 18-day sim.
+    dynProcess.addTask(scSim.CreateNewTask("printTask", macros.sec2nano(PRINT_PERIOD_S)))
+    orientationMonitor = OrientationMonitor(scObject.scStateOutMsg)
+    scSim.AddModelToTask("printTask", orientationMonitor)
+
+    # Vizard — disabled by default for this long (18-day, 3.1M-step) headless
+    # analysis run. Writing a per-step binary Vizard frame for that many steps
+    # is an I/O bottleneck unrelated to the physics; use a short-duration run
+    # (see wmm_pointing.py / dampening_test.py) for actual Vizard playback.
+    if vizSupport.vizFound and os.environ.get("PEROVSAT_ENABLE_VIZ"):
         vizSupport.enableUnityVisualization(
-            scSim,
-            "simTask",
-            scObject,
-            saveFile=VIZARD_OUTPUT
+            scSim, "simTask", scObject, saveFile=VIZARD_OUTPUT
         )
 
     scSim.InitializeSimulation()
