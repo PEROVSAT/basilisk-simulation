@@ -194,7 +194,8 @@ class PowerSystem:
         # Raw peak = 1361 * 0.01 * 0.20 = 2.722 W.  We want peak ~2.5 W,
         # and the average over time (considering orbit) to be ~0.93 W.
         # This factor brings the simulated average to that value.
-        self.generation_scaling = 0.93 / (self.SOLAR_CONSTANT * 0.01 * 0.20)
+        # Use SolarPanel.SOLAR_CONSTANT to avoid AttributeError.
+        self.generation_scaling = 0.93 / (SolarPanel.SOLAR_CONSTANT * 0.01 * 0.20)
         # That's about 0.342
 
         # Internal state
