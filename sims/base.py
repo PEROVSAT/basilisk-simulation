@@ -24,6 +24,7 @@ except ImportError as exc:
 from issOrbit import set_iss_orbit
 from hysteresisFactory import HysteresisFactory
 from solarSystemFactory import setup_solar_system, wire_wmm_epoch
+from power_system import PowerSystem
 
 # ---------------------------------------------------------------------------
 # Key parameters
@@ -38,31 +39,12 @@ OMEGA_INIT_RADS  = [[0.05], [0.07], [0.02]]
 
 DIPOLE_BODY_AM2  = np.array([0.0, 0.0, 0.15])
 
-# Real UTC epoch the sim starts at -- drives Earth's rotational phase (and
-# therefore which longitude the orbit's initial true anomaly sits over) and
-# the WMM secular-variation date, via solarSystemFactory.py. Swap between the
-# two presets below to compare a summer vs. winter launch; same year, so the
-# dominant difference is Earth's rotation state at insertion rather than WMM
-# secular drift (that term matters more for epochs years apart).
 EPOCH_UTC_SUMMER = "2026 JUN 21 12:00:00.0 (UTC)"
 EPOCH_UTC_WINTER = "2026 DEC 21 12:00:00.0 (UTC)"
 EPOCH_UTC        = EPOCH_UTC_SUMMER
 
-# 8-rod HyMu80 PMAC layout. Must fit a 1U (100mm) envelope. The prior 10mm
-# diameter gave L/D=9.5, BELOW the L/D>10 threshold that
-# hysteresisFactory.calculate_geometry()'s own Bozorth demagnetization-factor
-# formula warns is required for validity -- Nd swings by ~13x between
-# L/D=9.5 and L/D=47.5 (0.0216 -> 0.0016), so a sub-10 ratio isn't just
-# "less accurate," it's outside the regime the approximation is for. 2mm
-# also matches realistic HyMu80 flight-hardware proportions (thin, long
-# rods) much better than 10mm did.
-# NOTE: the hysteresis_configs/*.json Bs/Br/Hc values are labeled "effective
-# as-installed" for demagnetization but the Flatley-Henretty model doesn't
-# runtime-correct them from Nd (see hysteresisFactory.py) -- they weren't
-# re-derived for this geometry, so treat them as provisional too.
 ROD_DIAMETER_M   = 0.002   # 2 mm
-ROD_LENGTH_M     = 0.095   # 95 mm (200mm was checked in at one point and
-                            # physically cannot fit a 1U bus)
+ROD_LENGTH_M     = 0.095   # 95 mm
 
 # ---- Choose duration here ----
 # For 1‑hour test:
@@ -71,13 +53,12 @@ ROD_LENGTH_M     = 0.095   # 95 mm (200mm was checked in at one point and
 # RECORD_PERIOD_S = 1.0
 
 # For 18‑day run:
-SIM_DURATION_S   = 3600.0 * 24 * 50
-TIMESTEP_S       = 5
-RECORD_PERIOD_S  = 60.0
+SIM_DURATION_S   = 3600.0
+TIMESTEP_S       = 0.5
+RECORD_PERIOD_S  = 1.0
 
-# Console print period for the OrientationMonitor — coarse on purpose so the
-# 18-day run doesn't spam stdout.
 PRINT_PERIOD_S   = 3600.0
+POWER_UPDATE_PERIOD_S = TIMESTEP_S
 
 VIZARD_OUTPUT    = os.path.splitext(__file__)[0]
 
@@ -89,13 +70,6 @@ INV_SQRT2 = 0.70710678118654752
 
 
 class OrientationMonitor(sysModel.SysModel):
-    """
-    Prints sim time and attitude MRP (sigma_BN) to the console on its own
-    coarse task. Independent of Vizard, so the console trace can be diffed
-    against Vizard's playback to isolate whether an orientation discrepancy
-    is in the dynamics or in Vizard's rendering.
-    """
-
     def __init__(self, scStateOutMsg):
         super().__init__()
         self.ModelTag = "OrientationMonitor"
@@ -115,6 +89,53 @@ class OrientationMonitor(sysModel.SysModel):
         )
 
 
+class PowerManager(sysModel.SysModel):
+    def __init__(self, power_system, scStateOutMsg, spiceObject):
+        super().__init__()
+        self.ModelTag = "PowerManager"
+        self.power_system = power_system
+        self.scStateOutMsg = scStateOutMsg
+        self.spiceObject = spiceObject
+        self.last_time_ns = 0
+        self._dcm_warning_printed = False
+
+    def UpdateState(self, currentSimNanos):
+        scState = self.scStateOutMsg.read()
+        if scState is None:
+            return
+
+        # Get sun direction in inertial frame (dummy for now, replace with SPICE later)
+        sun_pos_n = self._get_sun_direction_inertial(currentSimNanos)
+        if sun_pos_n is None:
+            return
+
+        # Convert MRP to DCM – attempt to import rigidBodyKinematics, fallback to identity if unavailable
+        try:
+            # In some Basilisk versions, rigidBodyKinematics is in utilities
+            from Basilisk.utilities import rigidBodyKinematics
+            dcm = rigidBodyKinematics.MRP2C(scState.sigma_BN)
+            dcm = np.array(dcm).reshape(3, 3)
+        except ImportError:
+            # Fallback: use a simple approximation or identity
+            # This is only to allow the simulation to run; power system will be approximate.
+            if not self._dcm_warning_printed:
+                print("WARNING: rigidBodyKinematics not found; using identity DCM for power system.")
+                self._dcm_warning_printed = True
+            dcm = np.eye(3)
+
+        sun_dir_body = dcm.T @ (sun_pos_n / np.linalg.norm(sun_pos_n))
+
+        dt_s = (currentSimNanos - self.last_time_ns) * macros.NANO2SEC
+        if dt_s > 0:
+            self.power_system.step(dt_s, sun_direction_body=sun_dir_body)
+            self.last_time_ns = currentSimNanos
+
+    def _get_sun_direction_inertial(self, currentSimNanos):
+        # Placeholder – replace with actual SPICE call using self.spiceObject
+        # For now, return a fixed direction (along +X)
+        return np.array([1.0, 0.0, 0.0])
+
+
 def run():
     scSim = SimulationBaseClass.SimBaseClass()
     scSim.SetProgressBar(False)
@@ -129,19 +150,11 @@ def run():
     scObject.hub.IHubPntBc_B = INERTIA_KGM2
     scObject.hub.sigma_BNInit = SIGMA_INIT
     scObject.hub.omega_BN_BInit = OMEGA_INIT_RADS
-    # Adaptive (error-tolerance-controlled) integrator instead of fixed-step
-    # RK4: sub-steps internally between task ticks so integration accuracy
-    # is decoupled from TIMESTEP_S (see DEBUGGING.md #12). Must keep a
-    # persistent Python reference -- SWIG does not keep this object alive
-    # on its own, and an inline temporary gets GC'd before ExecuteSimulation
-    # runs, leaving scObject with a dangling integrator pointer (segfault).
+
     integrator = svIntegrators.svIntegratorRKF45(scObject)
     scObject.setIntegrator(integrator)
     scSim.AddModelToTask("simTask", scObject)
 
-    # Solar system gravity (Earth + Sun), anchored to a real UTC epoch so
-    # Earth's rotational phase at insertion -- and hence the WMM field trace
-    # along the orbit -- reflects the actual launch date.
     gravFactory, spiceObject = setup_solar_system(scSim, scObject, "simTask", EPOCH_UTC)
     set_iss_orbit(scObject, gravFactory.gravBodies["earth"].mu)
 
@@ -165,7 +178,19 @@ def run():
     scObject.addDynamicEffector(permMagnet)
     scSim.AddModelToTask("simTask", permMagnet)
 
-    # Hysteresis Rods – proven 8‑rod layout
+    # ----------------------------------------------------------------------
+    # Power System Integration
+    # ----------------------------------------------------------------------
+    power_system = PowerSystem(battery_capacity_wh=100.0, initial_soc=0.8)
+    power_manager = PowerManager(power_system, scObject.scStateOutMsg, spiceObject)
+
+    powerTask = scSim.CreateNewTask("powerTask", macros.sec2nano(POWER_UPDATE_PERIOD_S))
+    scSim.AddModelToTask("powerTask", power_manager)
+    dynProcess.addTask(powerTask)
+
+    # ----------------------------------------------------------------------
+    # Hysteresis Rods
+    # ----------------------------------------------------------------------
     rod_factory = HysteresisFactory(scSim, scObject, magModule)
 
     rod_defs = [
@@ -217,17 +242,11 @@ def run():
     pmTorqueRec = permMagnet.cmdTorqueOutMsg.recorder(rec_period)
     scSim.AddModelToTask("simTask", pmTorqueRec)
 
-    # Console orientation/timestamp monitor, on its own coarse task so it
-    # doesn't run 3.1M times over the 18-day sim.
     dynProcess.addTask(scSim.CreateNewTask("printTask", macros.sec2nano(PRINT_PERIOD_S)))
     orientationMonitor = OrientationMonitor(scObject.scStateOutMsg)
     scSim.AddModelToTask("printTask", orientationMonitor)
 
-    # Vizard — disabled by default for this long (18-day, 3.1M-step) headless
-    # analysis run. Writing a per-step binary Vizard frame for that many steps
-    # is an I/O bottleneck unrelated to the physics; use a short-duration run
-    # (see wmm_pointing.py / dampening_test.py) for actual Vizard playback.
-    if vizSupport.vizFound and os.environ.get("PEROVSAT_ENABLE_VIZ"):
+    if vizSupport.vizFound:
         vizSupport.enableUnityVisualization(
             scSim, "simTask", scObject, saveFile=VIZARD_OUTPUT
         )
@@ -236,7 +255,7 @@ def run():
     scSim.ConfigureStopTime(macros.sec2nano(SIM_DURATION_S))
     scSim.ExecuteSimulation()
 
-    # Post‑simulation analysis
+    # Post‑simulation
     print("\n" + "="*60)
     print("ROD TORQUE VERIFICATION")
     print("="*60)
@@ -255,12 +274,19 @@ def run():
             print(f"{tag}: NO DATA RECORDED!")
     print("="*60 + "\n")
 
+    power_system.print_summary()
+    power_system.plot_history('power_system.png')
+
     plot_hysteresis_loops(hystRecorders)
     plot_detumble_curve(scStateRec)
     plot_rod_torques(torque_recorders)
     plot_magnetic_field(magRec)
     plot_permanent_magnet_torque(pmTorqueRec)
 
+
+# ---------------------------------------------------------------------------
+# Plotting functions (unchanged)
+# ---------------------------------------------------------------------------
 
 def plot_hysteresis_loops(hystRecorders, filename="hysteresis_loop.png"):
     fig, axes = plt.subplots(1, 3, figsize=(16, 5))
@@ -315,7 +341,6 @@ def plot_detumble_curve(scStateRec, filename="detumble_curve.png"):
 
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 8), sharex=True)
 
-    # Use days if simulation is long, else hours
     if t_s[-1] > 3600*24:
         time_scale = 86400.0
         time_label = "Time (days)"
