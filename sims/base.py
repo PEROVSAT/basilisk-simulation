@@ -7,6 +7,7 @@ from Basilisk import __path__
 from Basilisk.architecture import sysModel
 from Basilisk.simulation import magneticFieldWMM, spacecraft, svIntegrators
 from Basilisk.utilities import SimulationBaseClass, macros, vizSupport
+from Basilisk.utilities import RigidBodyKinematics as rbk
 from Basilisk.utilities.supportDataTools.dataFetcher import DataFile, get_path
 
 # ---------------------------------------------------------------------------
@@ -24,7 +25,8 @@ except ImportError as exc:
 from issOrbit import set_iss_orbit
 from hysteresisFactory import HysteresisFactory
 from solarSystemFactory import setup_solar_system, wire_wmm_epoch
-from power_system import PowerSystem
+from power_system import PowerSystem, eclipse_shadow_factor, sun_distance_factor
+from payload_iv import Payload
 
 # ---------------------------------------------------------------------------
 # Key parameters
@@ -90,50 +92,55 @@ class OrientationMonitor(sysModel.SysModel):
 
 
 class PowerManager(sysModel.SysModel):
-    def __init__(self, power_system, scStateOutMsg, spiceObject):
+    """
+    Drives the PowerSystem from the live simulation state: reads the real Sun
+    position from SPICE and the spacecraft position/attitude, computes the
+    body-frame Sun direction, the eclipse shadow factor, and the 1/r^2
+    irradiance scaling, then advances the power model each task step.
+    """
+
+    def __init__(self, power_system, scStateOutMsg, sunStateInMsg, payload=None):
         super().__init__()
         self.ModelTag = "PowerManager"
         self.power_system = power_system
         self.scStateOutMsg = scStateOutMsg
-        self.spiceObject = spiceObject
+        self.sunStateInMsg = sunStateInMsg
+        self.payload = payload
         self.last_time_ns = 0
-        self._dcm_warning_printed = False
 
     def UpdateState(self, currentSimNanos):
         scState = self.scStateOutMsg.read()
-        if scState is None:
+        sunState = self.sunStateInMsg.read()
+        if scState is None or sunState is None:
             return
 
-        # Get sun direction in inertial frame (dummy for now, replace with SPICE later)
-        sun_pos_n = self._get_sun_direction_inertial(currentSimNanos)
-        if sun_pos_n is None:
+        # Earth-centred inertial positions [m] (zeroBase="earth" in the SPICE
+        # setup, so both are relative to Earth's centre).
+        r_sc_N = np.array(scState.r_BN_N)
+        r_sun_N = np.array(sunState.PositionVector)
+        if not np.any(r_sun_N):        # SPICE not populated yet (first tick guard)
             return
 
-        # Convert MRP to DCM – attempt to import rigidBodyKinematics, fallback to identity if unavailable
-        try:
-            # In some Basilisk versions, rigidBodyKinematics is in utilities
-            from Basilisk.utilities import rigidBodyKinematics
-            dcm = rigidBodyKinematics.MRP2C(scState.sigma_BN)
-            dcm = np.array(dcm).reshape(3, 3)
-        except ImportError:
-            # Fallback: use a simple approximation or identity
-            # This is only to allow the simulation to run; power system will be approximate.
-            if not self._dcm_warning_printed:
-                print("WARNING: rigidBodyKinematics not found; using identity DCM for power system.")
-                self._dcm_warning_printed = True
-            dcm = np.eye(3)
+        s = r_sun_N - r_sc_N           # spacecraft -> Sun
+        dist = np.linalg.norm(s)
+        if dist == 0.0:
+            return
 
-        sun_dir_body = dcm.T @ (sun_pos_n / np.linalg.norm(sun_pos_n))
+        # sigma_BN -> [BN]; MRP2C returns [BN], so v_B = [BN] v_N.
+        dcm_BN = np.array(rbk.MRP2C(scState.sigma_BN)).reshape(3, 3)
+        sun_dir_body = dcm_BN @ (s / dist)
+
+        shadow = eclipse_shadow_factor(r_sc_N, r_sun_N)
+        sdf = sun_distance_factor(s)
 
         dt_s = (currentSimNanos - self.last_time_ns) * macros.NANO2SEC
         if dt_s > 0:
-            self.power_system.step(dt_s, sun_direction_body=sun_dir_body)
+            self.power_system.step(dt_s, sun_direction_body=sun_dir_body,
+                                   shadow_factor=shadow, sun_distance_factor=sdf)
+            if self.payload is not None:
+                self.payload.step(dt_s, sun_direction_body=sun_dir_body,
+                                  shadow_factor=shadow, sun_distance_factor=sdf)
             self.last_time_ns = currentSimNanos
-
-    def _get_sun_direction_inertial(self, currentSimNanos):
-        # Placeholder – replace with actual SPICE call using self.spiceObject
-        # For now, return a fixed direction (along +X)
-        return np.array([1.0, 0.0, 0.0])
 
 
 def run():
@@ -182,7 +189,11 @@ def run():
     # Power System Integration
     # ----------------------------------------------------------------------
     power_system = PowerSystem(battery_capacity_wh=100.0, initial_soc=0.8)
-    power_manager = PowerManager(power_system, scObject.scStateOutMsg, spiceObject)
+    payload = Payload()
+    sunIdx = gravFactory.spicePlanetNames.index("sun")
+    sunStateMsg = spiceObject.planetStateOutMsgs[sunIdx]
+    power_manager = PowerManager(power_system, scObject.scStateOutMsg, sunStateMsg,
+                                 payload=payload)
 
     powerTask = scSim.CreateNewTask("powerTask", macros.sec2nano(POWER_UPDATE_PERIOD_S))
     scSim.AddModelToTask("powerTask", power_manager)
@@ -276,6 +287,10 @@ def run():
 
     power_system.print_summary()
     power_system.plot_history('power_system.png')
+
+    payload.print_sample_sweep()
+    payload.print_summary()
+    payload.plot('iv_curves.png')
 
     plot_hysteresis_loops(hystRecorders)
     plot_detumble_curve(scStateRec)
