@@ -1,23 +1,49 @@
+"""
+base.py
+Experiment base for PEROVSAT simulations.
+
+Assembles the fundamental simulation (spacecraft, orbit, WMM, permanent
+magnet, hysteresis rods, power system, payload) and exposes every handle and
+recorder on a SimulationResults object. It never plots or interprets anything
+-- that belongs to specific experiments in sims/experiments/.
+
+Create an experiment by subclassing BaseExperiment: override configure() to
+set parameters and analyze() to interpret results.
+
+    class MyExperiment(BaseExperiment):
+        def configure(self):
+            self.config.sim_duration_s = 3600.0
+            self.config.enable_rods = False
+        def analyze(self, results):
+            results.power_system.plot_history("power_states.png")
+
+    MyExperiment().main()               # or MyExperiment(sim_duration_s=7200).main()
+
+base.py should only change when a genuinely new subsystem is added: wire it up
+in build() (a small _build_* step) and expose its recorder on
+SimulationResults so every experiment can reach it.
+"""
+
 import os
 import sys
-import numpy as np
-import matplotlib.pyplot as plt
+from dataclasses import dataclass, field
+from typing import Any, Optional
 
-from Basilisk import __path__
-from Basilisk.architecture import sysModel
+import numpy as np
+
 from Basilisk.simulation import magneticFieldWMM, spacecraft, svIntegrators
 from Basilisk.utilities import SimulationBaseClass, macros, vizSupport
-from Basilisk.utilities import RigidBodyKinematics as rbk
 from Basilisk.utilities.supportDataTools.dataFetcher import DataFile, get_path
 
 # ---------------------------------------------------------------------------
-# Path setup & Imports
+# Path setup & imports
 # ---------------------------------------------------------------------------
 _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(_root, "PythonModules"))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))   # sims/ (sysmodels)
 
 try:
-    import perovsat_plugins.messaging
+    import perovsat_plugins.messaging          # noqa: F401  (registers recorders)
     from perovsat_plugins.permanentMagnet import PermanentMagnet
 except ImportError as exc:
     raise ImportError(f"Compiled plugin modules not found.\nOriginal error: {exc}") from exc
@@ -25,528 +51,260 @@ except ImportError as exc:
 from issOrbit import set_iss_orbit
 from hysteresisFactory import HysteresisFactory
 from solarSystemFactory import setup_solar_system, wire_wmm_epoch
-from power_system import PowerSystem, eclipse_shadow_factor, sun_distance_factor
+from power_system import PowerSystem
 from payload_iv import Payload
+from sysmodels import OrientationMonitor, PowerManager
 
 # ---------------------------------------------------------------------------
-# Key parameters
+# Fixed references (not per-experiment tunable)
 # ---------------------------------------------------------------------------
-MASS_KG          = 1.2
-INERTIA_KGM2     = [[0.002, 0.0, 0.0],
-                     [0.0,   0.002, 0.0],
-                     [0.0,   0.0,   0.001]]
-
-SIGMA_INIT       = [[0.2], [-0.1], [0.3]]
-OMEGA_INIT_RADS  = [[0.05], [0.07], [0.02]]
-
-DIPOLE_BODY_AM2  = np.array([0.0, 0.0, 0.15])
-
 EPOCH_UTC_SUMMER = "2026 JUN 21 12:00:00.0 (UTC)"
 EPOCH_UTC_WINTER = "2026 DEC 21 12:00:00.0 (UTC)"
-EPOCH_UTC        = EPOCH_UTC_SUMMER
-
-ROD_DIAMETER_M   = 0.002   # 2 mm
-ROD_LENGTH_M     = 0.095   # 95 mm
-
-# ---- Choose duration here ----
-# For 1‑hour test:
-# SIM_DURATION_S = 3600.0
-# TIMESTEP_S = 0.5
-# RECORD_PERIOD_S = 1.0
-
-# For 18‑day run:
-SIM_DURATION_S   = 3600.0
-TIMESTEP_S       = 0.5
-RECORD_PERIOD_S  = 1.0
-
-PRINT_PERIOD_S   = 3600.0
-POWER_UPDATE_PERIOD_S = TIMESTEP_S
-
-VIZARD_OUTPUT    = os.path.splitext(__file__)[0]
 
 _configs_dir = os.path.join(_root, "hysteresis_configs")
-Z_JSON  = os.path.join(_configs_dir, "hymu80_z_axis.json")
+Z_JSON = os.path.join(_configs_dir, "hymu80_z_axis.json")
 XY_JSON = os.path.join(_configs_dir, "hymu80_xy_axis.json")
 
 INV_SQRT2 = 0.70710678118654752
 
-
-class OrientationMonitor(sysModel.SysModel):
-    def __init__(self, scStateOutMsg):
-        super().__init__()
-        self.ModelTag = "OrientationMonitor"
-        self.scStateOutMsg = scStateOutMsg
-
-    def UpdateState(self, currentSimNanos):
-        state = self.scStateOutMsg.read()
-        t_s = currentSimNanos * macros.NANO2SEC
-        sigma = state.sigma_BN
-        omega = state.omega_BN_B
-        omega_deg = np.degrees(omega)
-        omega_mag_deg = np.degrees(np.linalg.norm(omega))
-        print(
-            f"t={t_s:10.1f}s  sigma_BN=[{sigma[0]:+.4f}, {sigma[1]:+.4f}, {sigma[2]:+.4f}]"
-            f"  omega_BN_B=[{omega_deg[0]:+.4f}, {omega_deg[1]:+.4f}, {omega_deg[2]:+.4f}] deg/s"
-            f"  |omega|={omega_mag_deg:.4f} deg/s"
-        )
-
-
-class PowerManager(sysModel.SysModel):
-    """
-    Drives the PowerSystem from the live simulation state: reads the real Sun
-    position from SPICE and the spacecraft position/attitude, computes the
-    body-frame Sun direction, the eclipse shadow factor, and the 1/r^2
-    irradiance scaling, then advances the power model each task step.
-    """
-
-    def __init__(self, power_system, scStateOutMsg, sunStateInMsg, payload=None):
-        super().__init__()
-        self.ModelTag = "PowerManager"
-        self.power_system = power_system
-        self.scStateOutMsg = scStateOutMsg
-        self.sunStateInMsg = sunStateInMsg
-        self.payload = payload
-        self.last_time_ns = 0
-
-    def UpdateState(self, currentSimNanos):
-        scState = self.scStateOutMsg.read()
-        sunState = self.sunStateInMsg.read()
-        if scState is None or sunState is None:
-            return
-
-        # Earth-centred inertial positions [m] (zeroBase="earth" in the SPICE
-        # setup, so both are relative to Earth's centre).
-        r_sc_N = np.array(scState.r_BN_N)
-        r_sun_N = np.array(sunState.PositionVector)
-        if not np.any(r_sun_N):        # SPICE not populated yet (first tick guard)
-            return
-
-        s = r_sun_N - r_sc_N           # spacecraft -> Sun
-        dist = np.linalg.norm(s)
-        if dist == 0.0:
-            return
-
-        # sigma_BN -> [BN]; MRP2C returns [BN], so v_B = [BN] v_N.
-        dcm_BN = np.array(rbk.MRP2C(scState.sigma_BN)).reshape(3, 3)
-        sun_dir_body = dcm_BN @ (s / dist)
-
-        shadow = eclipse_shadow_factor(r_sc_N, r_sun_N)
-        sdf = sun_distance_factor(s)
-
-        dt_s = (currentSimNanos - self.last_time_ns) * macros.NANO2SEC
-        if dt_s > 0:
-            self.power_system.step(dt_s, sun_direction_body=sun_dir_body,
-                                   shadow_factor=shadow, sun_distance_factor=sdf)
-            if self.payload is not None:
-                self.payload.step(dt_s, sun_direction_body=sun_dir_body,
-                                  shadow_factor=shadow, sun_distance_factor=sdf)
-            self.last_time_ns = currentSimNanos
-
-
-def run():
-    scSim = SimulationBaseClass.SimBaseClass()
-    scSim.SetProgressBar(False)
-
-    dynProcess = scSim.CreateNewProcess("simProcess")
-    dynProcess.addTask(scSim.CreateNewTask("simTask", macros.sec2nano(TIMESTEP_S)))
-
-    # Spacecraft
-    scObject = spacecraft.Spacecraft()
-    scObject.ModelTag = "PEROVSAT"
-    scObject.hub.mHub = MASS_KG
-    scObject.hub.IHubPntBc_B = INERTIA_KGM2
-    scObject.hub.sigma_BNInit = SIGMA_INIT
-    scObject.hub.omega_BN_BInit = OMEGA_INIT_RADS
-
-    integrator = svIntegrators.svIntegratorRKF45(scObject)
-    scObject.setIntegrator(integrator)
-    scSim.AddModelToTask("simTask", scObject)
-
-    gravFactory, spiceObject = setup_solar_system(scSim, scObject, "simTask", EPOCH_UTC)
-    set_iss_orbit(scObject, gravFactory.gravBodies["earth"].mu)
-
-    # WMM
-    magModule = magneticFieldWMM.MagneticFieldWMM()
-    magModule.ModelTag = "WMM"
-    magModule.configureWMMFile(str(get_path(DataFile.MagneticFieldData.WMM)))
-    magModule.addSpacecraftToModel(scObject.scStateOutMsg)
-    wire_wmm_epoch(magModule, gravFactory, spiceObject)
-    scSim.AddModelToTask("simTask", magModule)
-
-    rec_period = macros.sec2nano(RECORD_PERIOD_S)
-    magRec = magModule.envOutMsgs[0].recorder(rec_period)
-    scSim.AddModelToTask("simTask", magRec)
-
-    # Permanent magnet
-    permMagnet = PermanentMagnet()
-    permMagnet.ModelTag = "PermanentMagnet"
-    permMagnet.magDipole_B = DIPOLE_BODY_AM2
-    permMagnet.magFieldInMsg.subscribeTo(magModule.envOutMsgs[0])
-    scObject.addDynamicEffector(permMagnet)
-    scSim.AddModelToTask("simTask", permMagnet)
-
-    # ----------------------------------------------------------------------
-    # Power System Integration
-    # ----------------------------------------------------------------------
-    power_system = PowerSystem(battery_capacity_wh=100.0, initial_soc=0.8)
-    payload = Payload()
-    sunIdx = gravFactory.spicePlanetNames.index("sun")
-    sunStateMsg = spiceObject.planetStateOutMsgs[sunIdx]
-    power_manager = PowerManager(power_system, scObject.scStateOutMsg, sunStateMsg,
-                                 payload=payload)
-
-    powerTask = scSim.CreateNewTask("powerTask", macros.sec2nano(POWER_UPDATE_PERIOD_S))
-    scSim.AddModelToTask("powerTask", power_manager)
-    dynProcess.addTask(powerTask)
-
-    # ----------------------------------------------------------------------
-    # Hysteresis Rods
-    # ----------------------------------------------------------------------
-    rod_factory = HysteresisFactory(scSim, scObject, magModule)
-
-    rod_defs = [
-        ("HystRod_Z1", [0.0, 0.0, 1.0], Z_JSON),
-        ("HystRod_Z2", [0.0, 0.0, 1.0], Z_JSON),
-        ("HystRod_X1", [1.0, 0.0, 0.0], XY_JSON),
-        ("HystRod_X2", [1.0, 0.0, 0.0], XY_JSON),
-        ("HystRod_Y1", [0.0, 1.0, 0.0], XY_JSON),
-        ("HystRod_Y2", [0.0, 1.0, 0.0], XY_JSON),
-        ("HystRod_D1", [ INV_SQRT2,  INV_SQRT2, 0.0], XY_JSON),
-        ("HystRod_D2", [ INV_SQRT2, -INV_SQRT2, 0.0], XY_JSON),
-    ]
-
-    rods = {}
-    print("\n" + "="*60)
-    print("CREATING HYSTERESIS RODS")
-    print("="*60)
-    for tag, axis, json_path in rod_defs:
-        rods[tag] = rod_factory.add_rod(
-            length_m=ROD_LENGTH_M,
-            diameter_m=ROD_DIAMETER_M,
-            axis_B=axis,
-            json_path=json_path,
-            tag=tag,
-        )
-    
-    print("\n" + "="*60)
-    print(f"Total rods created: {len(rods)}")
-    print("="*60 + "\n")
-
-    # Recorders
-    torque_recorders = {}
-    for tag, rod in rods.items():
-        rec = rod.torqueLogOutMsg.recorder(rec_period)
-        scSim.AddModelToTask("simTask", rec)
-        torque_recorders[tag] = rec
-
-    hystRecorders = {
-        "Z": rods["HystRod_Z1"].hysteresisDebugOutMsg.recorder(rec_period),
-        "X": rods["HystRod_X1"].hysteresisDebugOutMsg.recorder(rec_period),
-        "D": rods["HystRod_D1"].hysteresisDebugOutMsg.recorder(rec_period),
-    }
-    for rec in hystRecorders.values():
-        scSim.AddModelToTask("simTask", rec)
-
-    scStateRec = scObject.scStateOutMsg.recorder(rec_period)
-    scSim.AddModelToTask("simTask", scStateRec)
-
-    pmTorqueRec = permMagnet.cmdTorqueOutMsg.recorder(rec_period)
-    scSim.AddModelToTask("simTask", pmTorqueRec)
-
-    dynProcess.addTask(scSim.CreateNewTask("printTask", macros.sec2nano(PRINT_PERIOD_S)))
-    orientationMonitor = OrientationMonitor(scObject.scStateOutMsg)
-    scSim.AddModelToTask("printTask", orientationMonitor)
-
-    if vizSupport.vizFound:
-        vizSupport.enableUnityVisualization(
-            scSim, "simTask", scObject, saveFile=VIZARD_OUTPUT
-        )
-
-    scSim.InitializeSimulation()
-    scSim.ConfigureStopTime(macros.sec2nano(SIM_DURATION_S))
-    scSim.ExecuteSimulation()
-
-    # Post‑simulation
-    print("\n" + "="*60)
-    print("ROD TORQUE VERIFICATION")
-    print("="*60)
-    for tag, rec in torque_recorders.items():
-        torque = np.array(rec.torqueRequestBody)
-        if len(torque) > 0:
-            torque_mag = np.linalg.norm(torque, axis=1)
-            torque_mag = torque_mag[np.isfinite(torque_mag)]
-            if len(torque_mag) > 0:
-                avg_torque = np.mean(torque_mag)
-                max_torque = np.max(torque_mag)
-                print(f"{tag}: avg={avg_torque:.2e} Nm, max={max_torque:.2e} Nm")
-            else:
-                print(f"{tag}: ALL INF/NAN VALUES!")
-        else:
-            print(f"{tag}: NO DATA RECORDED!")
-    print("="*60 + "\n")
-
-    power_system.print_summary()
-    power_system.plot_history('power_system.png')
-
-    payload.print_sample_sweep()
-    payload.print_summary()
-    payload.plot('iv_curves.png')
-
-    plot_hysteresis_loops(hystRecorders)
-    plot_detumble_curve(scStateRec)
-    plot_rod_torques(torque_recorders)
-    plot_magnetic_field(magRec)
-    plot_permanent_magnet_torque(pmTorqueRec)
+# 8-rod HyMu80 PMAC layout: (tag, body axis, material JSON).
+ROD_LAYOUT = [
+    ("HystRod_Z1", [0.0, 0.0, 1.0], Z_JSON),
+    ("HystRod_Z2", [0.0, 0.0, 1.0], Z_JSON),
+    ("HystRod_X1", [1.0, 0.0, 0.0], XY_JSON),
+    ("HystRod_X2", [1.0, 0.0, 0.0], XY_JSON),
+    ("HystRod_Y1", [0.0, 1.0, 0.0], XY_JSON),
+    ("HystRod_Y2", [0.0, 1.0, 0.0], XY_JSON),
+    ("HystRod_D1", [INV_SQRT2,  INV_SQRT2, 0.0], XY_JSON),
+    ("HystRod_D2", [INV_SQRT2, -INV_SQRT2, 0.0], XY_JSON),
+]
 
 
 # ---------------------------------------------------------------------------
-# Plotting functions (unchanged)
+# Experiment configuration
 # ---------------------------------------------------------------------------
-
-def plot_hysteresis_loops(hystRecorders, filename="hysteresis_loop.png"):
-    fig, axes = plt.subplots(1, 3, figsize=(16, 5))
-    labels = {"Z": "Z-Axis Rod (Z1)", "X": "X-Axis Rod (X1)", "D": "Diagonal Rod (D1)"}
-
-    for ax, key in zip(axes, ["Z", "X", "D"]):
-        rec = hystRecorders[key]
-        H = np.array(rec.H)
-        M = np.array(rec.M)
-        
-        if len(H) == 0 or len(M) == 0:
-            ax.text(0.5, 0.5, "NO DATA RECORDED", 
-                   transform=ax.transAxes, ha='center', va='center')
-            ax.set_title(f"{labels[key]} - NO DATA")
-            continue
-            
-        finite_mask = np.isfinite(H) & np.isfinite(M)
-        H_finite = H[finite_mask]
-        M_finite = M[finite_mask]
-        
-        if len(H_finite) == 0:
-            ax.text(0.5, 0.5, "ALL INF/NAN VALUES", 
-                   transform=ax.transAxes, ha='center', va='center')
-            ax.set_title(f"{labels[key]} - NO VALID DATA")
-            continue
-            
-        ax.plot(H_finite, M_finite, color='blue', linewidth=0.8)
-        ax.plot(H_finite[0], M_finite[0], 'go', label="Start")
-        ax.plot(H_finite[-1], M_finite[-1], 'ro', label="End")
-        ax.set_xlabel("H (A/m)")
-        ax.set_ylabel("M (A/m)")
-        ax.set_title(labels[key])
-        ax.grid(True, linestyle='--', alpha=0.7)
-        ax.legend()
-
-    fig.suptitle("Flatley-Henretty Hysteresis Loops")
-    plt.tight_layout()
-    plt.savefig(filename, dpi=200)
-    plt.close(fig)
+@dataclass
+class ExperimentConfig:
+    """Every per-experiment knob. Subclasses tweak these in configure()."""
+    # timing
+    sim_duration_s: float = 3600.0
+    timestep_s: float = 0.5
+    record_period_s: float = 1.0
+    power_update_period_s: float = 0.5
+    print_period_s: float = 3600.0
+    # epoch
+    epoch_utc: str = EPOCH_UTC_SUMMER
+    # spacecraft
+    mass_kg: float = 1.2
+    inertia_kgm2: tuple = ((0.002, 0.0, 0.0),
+                           (0.0, 0.002, 0.0),
+                           (0.0, 0.0, 0.001))
+    sigma_init: tuple = (0.2, -0.1, 0.3)
+    omega_init_rads: tuple = (0.05, 0.07, 0.02)
+    dipole_body_am2: tuple = (0.0, 0.0, 0.15)
+    # hysteresis rods
+    rod_diameter_m: float = 0.002
+    rod_length_m: float = 0.095
+    # subsystem toggles
+    enable_perm_magnet: bool = True
+    enable_rods: bool = True
+    enable_power: bool = True
+    enable_payload: bool = True
+    enable_viz: bool = False
+    # power system
+    battery_capacity_wh: float = 100.0
+    battery_initial_soc: float = 0.8
+    # output
+    vizard_output: Optional[str] = None
 
 
-def plot_detumble_curve(scStateRec, filename="detumble_curve.png"):
-    t_s = np.array(scStateRec.times()) * 1.0e-9
-    omega = np.array(scStateRec.omega_BN_B)
-
-    if len(t_s) == 0:
-        print("WARNING: No spacecraft state data recorded!")
-        return
-
-    omega_deg = np.degrees(omega)
-    omega_mag_deg = np.degrees(np.linalg.norm(omega, axis=1))
-
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 8), sharex=True)
-
-    if t_s[-1] > 3600*24:
-        time_scale = 86400.0
-        time_label = "Time (days)"
-    else:
-        time_scale = 3600.0
-        time_label = "Time (hours)"
-
-    t_plot = t_s / time_scale
-
-    ax1.plot(t_plot, omega_deg[:, 0], label=r"$\omega_x$", linewidth=0.7)
-    ax1.plot(t_plot, omega_deg[:, 1], label=r"$\omega_y$", linewidth=0.7)
-    ax1.plot(t_plot, omega_deg[:, 2], label=r"$\omega_z$", linewidth=0.7)
-    ax1.set_ylabel("Body rate (deg/s)")
-    ax1.set_title("PMAC Detumble Curve – 8‑Rod HyMu80 Layout")
-    ax1.grid(True, linestyle='--', alpha=0.6)
-    ax1.legend()
-
-    ax2.plot(t_plot, omega_mag_deg, color='k', linewidth=1.0)
-    ax2.set_xlabel(time_label)
-    ax2.set_ylabel(r"$|\omega|$ (deg/s)")
-    ax2.grid(True, linestyle='--', alpha=0.6)
-
-    plt.tight_layout()
-    plt.savefig(filename, dpi=200)
-    plt.close(fig)
-
-    np.savez("detumble_data.npz", t_s=t_s, omega=omega)
-
-    print(f"\n{'='*60}")
-    print("DETUMBLE RESULTS")
-    print('='*60)
-    print(f"Initial |omega|: {omega_mag_deg[0]:.4f} deg/s")
-    print(f"Final   |omega|: {omega_mag_deg[-1]:.4f} deg/s  (t = {t_s[-1]/86400.0:.2f} days)")
-    reduction = (1 - omega_mag_deg[-1]/omega_mag_deg[0])*100
-    print(f"Reduction: {reduction:.1f}%")
-    print('='*60 + "\n")
+# ---------------------------------------------------------------------------
+# Simulation results container (everything an experiment might plot)
+# ---------------------------------------------------------------------------
+@dataclass
+class SimulationResults:
+    config: ExperimentConfig
+    scSim: Any = None
+    scObject: Any = None
+    integrator: Any = None   # MUST be kept alive: SWIG won't, and scObject
+                             # holds only a raw pointer -> GC = segfault.
+    gravFactory: Any = None
+    spiceObject: Any = None
+    magModule: Any = None
+    permMagnet: Any = None
+    power_system: Any = None
+    payload: Any = None
+    power_manager: Any = None
+    rods: dict = field(default_factory=dict)
+    # recorders
+    scStateRec: Any = None
+    magRec: Any = None
+    pmTorqueRec: Any = None
+    torque_recorders: dict = field(default_factory=dict)
+    hystRecorders: dict = field(default_factory=dict)
 
 
-def plot_rod_torques(torque_recorders, filename="rod_torques.png"):
-    n_rods = len(torque_recorders)
-    n_cols = 4
-    n_rows = (n_rods + n_cols - 1) // n_cols
-    
-    fig, axes = plt.subplots(n_rows, n_cols, figsize=(16, 4*n_rows))
-    if n_rows == 1:
-        axes = axes.reshape(1, -1)
-    axes = axes.flatten()
-    
-    for idx, (tag, rec) in enumerate(torque_recorders.items()):
-        t_s = np.array(rec.times()) * 1.0e-9
-        torque = np.array(rec.torqueRequestBody)
-        
-        if len(t_s) == 0:
-            axes[idx].text(0.5, 0.5, f"{tag}\nNO DATA", 
-                          transform=axes[idx].transAxes, ha='center', va='center')
-            axes[idx].set_title(tag)
-            continue
-            
-        if t_s[-1] > 3600*24:
-            time_scale = 86400.0
-            time_label = "Time (days)"
-        else:
-            time_scale = 3600.0
-            time_label = "Time (hours)"
-            
-        t_plot = t_s / time_scale
-        torque_mag = np.linalg.norm(torque, axis=1)
-        
-        finite_mask = np.isfinite(torque_mag)
-        if not np.any(finite_mask):
-            axes[idx].text(0.5, 0.5, f"{tag}\nALL INF/NAN", 
-                          transform=axes[idx].transAxes, ha='center', va='center')
-            axes[idx].set_title(tag)
-            continue
-            
-        t_finite = t_plot[finite_mask]
-        torque_finite = torque[finite_mask]
-        torque_mag_finite = torque_mag[finite_mask]
-        
-        avg_torque = np.mean(torque_mag_finite)
-        max_torque = np.max(torque_mag_finite)
-        
-        axes[idx].plot(t_finite, torque_finite[:, 0], label='x', linewidth=0.5)
-        axes[idx].plot(t_finite, torque_finite[:, 1], label='y', linewidth=0.5)
-        axes[idx].plot(t_finite, torque_finite[:, 2], label='z', linewidth=0.5)
-        axes[idx].plot(t_finite, torque_mag_finite, 'k--', label='|τ|', linewidth=0.7)
-        axes[idx].set_title(f"{tag}\navg={avg_torque:.2e} Nm, max={max_torque:.2e} Nm")
-        axes[idx].set_xlabel(time_label)
-        axes[idx].set_ylabel('Torque (Nm)')
-        axes[idx].legend(fontsize=6)
-        axes[idx].grid(True, alpha=0.3)
-    
-    for idx in range(len(torque_recorders), len(axes)):
-        axes[idx].set_visible(False)
-    
-    plt.tight_layout()
-    plt.savefig(filename, dpi=200)
-    plt.close(fig)
+# ---------------------------------------------------------------------------
+# Base experiment
+# ---------------------------------------------------------------------------
+class BaseExperiment:
+    """
+    Assembles and runs the PEROVSAT simulation. Subclass it, override
+    configure() to set parameters and analyze() to interpret/plot results.
+    """
+    Config = ExperimentConfig
 
+    def __init__(self, **overrides):
+        # Precedence: dataclass defaults < configure() < constructor overrides.
+        # Config(**overrides) validates the keys; configure() sets the
+        # experiment's baseline; then we re-apply overrides so an explicit
+        # kwarg always wins over configure() rather than being clobbered by it.
+        self.config = self.Config(**overrides)
+        self.configure()
+        for key, value in overrides.items():
+            setattr(self.config, key, value)
 
-def plot_magnetic_field(magRec, filename="magnetic_field.png"):
-    t_s = np.array(magRec.times()) * 1.0e-9
-    
-    try:
-        B = np.array(magRec.magField_N)
-    except AttributeError:
-        try:
-            B = np.array(magRec.magneticField_N)
-        except AttributeError:
-            print("WARNING: Could not read magnetic field data")
-            return
-    
-    if len(t_s) == 0:
-        print("WARNING: No magnetic field data recorded!")
-        return
-        
-    if t_s[-1] > 3600*24:
-        time_scale = 86400.0
-        time_label = "Time (days)"
-    else:
-        time_scale = 3600.0
-        time_label = "Time (hours)"
-        
-    t_plot = t_s / time_scale
-    B_mag = np.linalg.norm(B, axis=1)
-    
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 8))
-    
-    ax1.plot(t_plot, B[:, 0], label='Bx', linewidth=0.7)
-    ax1.plot(t_plot, B[:, 1], label='By', linewidth=0.7)
-    ax1.plot(t_plot, B[:, 2], label='Bz', linewidth=0.7)
-    ax1.set_ylabel('B (T)')
-    ax1.set_title('Magnetic Field Components (Inertial Frame)')
-    ax1.legend()
-    ax1.grid(True, alpha=0.3)
-    
-    ax2.plot(t_plot, B_mag, 'k-', linewidth=1.0)
-    ax2.axhline(y=np.mean(B_mag), color='r', linestyle='--', 
-                label=f'Mean: {np.mean(B_mag):.1e} T')
-    ax2.set_xlabel(time_label)
-    ax2.set_ylabel('|B| (T)')
-    ax2.set_title('Magnetic Field Magnitude')
-    ax2.legend()
-    ax2.grid(True, alpha=0.3)
-    
-    plt.tight_layout()
-    plt.savefig(filename, dpi=200)
-    plt.close(fig)
-    
-    print("\n" + "="*60)
-    print("MAGNETIC FIELD ANALYSIS")
-    print("="*60)
-    print(f"Mean |B|: {np.mean(B_mag):.1e} T")
-    print(f"Min |B|:  {np.min(B_mag):.1e} T")
-    print(f"Max |B|:  {np.max(B_mag):.1e} T")
-    print("="*60 + "\n")
+    # -- hooks for subclasses -------------------------------------------
+    def configure(self):
+        """Override to adjust self.config before the simulation is built."""
 
+    def analyze(self, results):
+        """Override to print/plot experiment-specific output after the run."""
 
-def plot_permanent_magnet_torque(pmTorqueRec, filename="pm_torque.png"):
-    t_s = np.array(pmTorqueRec.times()) * 1.0e-9
-    torque = np.array(pmTorqueRec.torqueRequestBody)
-    
-    if len(t_s) == 0:
-        print("WARNING: No permanent magnet torque data recorded!")
-        return
-        
-    if t_s[-1] > 3600*24:
-        time_scale = 86400.0
-        time_label = "Time (days)"
-    else:
-        time_scale = 3600.0
-        time_label = "Time (hours)"
-        
-    t_plot = t_s / time_scale
-    torque_mag = np.linalg.norm(torque, axis=1)
-    
-    fig, ax = plt.subplots(figsize=(10, 6))
-    ax.plot(t_plot, torque[:, 0], label='τx', linewidth=0.7)
-    ax.plot(t_plot, torque[:, 1], label='τy', linewidth=0.7)
-    ax.plot(t_plot, torque[:, 2], label='τz', linewidth=0.7)
-    ax.plot(t_plot, torque_mag, 'k--', label='|τ|', linewidth=1.0)
-    ax.set_xlabel(time_label)
-    ax.set_ylabel('Torque (Nm)')
-    ax.set_title('Permanent Magnet Torque (For Reference)')
-    ax.legend()
-    ax.grid(True, alpha=0.3)
-    
-    plt.tight_layout()
-    plt.savefig(filename, dpi=200)
-    plt.close(fig)
+    # -- lifecycle ------------------------------------------------------
+    def build(self) -> SimulationResults:
+        """Assemble the simulation from self.config; return SimulationResults."""
+        cfg = self.config
+        self._sim = SimulationBaseClass.SimBaseClass()
+        self._sim.SetProgressBar(False)
+        self._process = self._sim.CreateNewProcess("simProcess")
+        self._process.addTask(self._sim.CreateNewTask("simTask", macros.sec2nano(cfg.timestep_s)))
+        self._rec = macros.sec2nano(cfg.record_period_s)
+
+        r = SimulationResults(config=cfg, scSim=self._sim)
+        self._build_spacecraft(r)
+        self._build_environment(r)
+        if cfg.enable_perm_magnet:
+            self._build_magnet(r)
+        if cfg.enable_power:
+            self._build_power(r)
+        if cfg.enable_rods:
+            self._build_rods(r)
+        self._build_monitors(r)
+        self._maybe_enable_viz(r)
+        return r
+
+    def run(self) -> SimulationResults:
+        """Build and execute the simulation; return the populated results."""
+        cfg = self.config
+        r = self.build()
+        r.scSim.InitializeSimulation()
+        print(f"\n[sim] running {cfg.sim_duration_s:.0f} s "
+              f"({cfg.sim_duration_s / 3600.0:.2f} h) at dt={cfg.timestep_s}s ...\n")
+        r.scSim.ConfigureStopTime(macros.sec2nano(cfg.sim_duration_s))
+        r.scSim.ExecuteSimulation()
+        print(f"\n[sim] complete: simulated {cfg.sim_duration_s:.0f} s "
+              f"({cfg.sim_duration_s / 3600.0:.2f} h)\n")
+        return r
+
+    def main(self) -> SimulationResults:
+        """Run the simulation, then hand results to analyze()."""
+        results = self.run()
+        self.analyze(results)
+        return results
+
+    # -- build steps (each wires one subsystem onto self._sim) ----------
+    def _build_spacecraft(self, r):
+        cfg = self.config
+        sc = spacecraft.Spacecraft()
+        sc.ModelTag = "PEROVSAT"
+        sc.hub.mHub = cfg.mass_kg
+        sc.hub.IHubPntBc_B = [list(row) for row in cfg.inertia_kgm2]
+        sc.hub.sigma_BNInit = [[v] for v in cfg.sigma_init]
+        sc.hub.omega_BN_BInit = [[v] for v in cfg.omega_init_rads]
+        # Keep the integrator alive on r: SWIG doesn't, and scObject holds only
+        # a raw pointer, so GC after build() returns would segfault the run.
+        integrator = svIntegrators.svIntegratorRKF45(sc)
+        sc.setIntegrator(integrator)
+        self._sim.AddModelToTask("simTask", sc)
+        r.scObject = sc
+        r.integrator = integrator
+
+    def _build_environment(self, r):
+        cfg = self.config
+        gravFactory, spiceObject = setup_solar_system(self._sim, r.scObject, "simTask", cfg.epoch_utc)
+        set_iss_orbit(r.scObject, gravFactory.gravBodies["earth"].mu)
+        r.gravFactory = gravFactory
+        r.spiceObject = spiceObject
+
+        mag = magneticFieldWMM.MagneticFieldWMM()
+        mag.ModelTag = "WMM"
+        mag.configureWMMFile(str(get_path(DataFile.MagneticFieldData.WMM)))
+        mag.addSpacecraftToModel(r.scObject.scStateOutMsg)
+        wire_wmm_epoch(mag, gravFactory, spiceObject)
+        self._sim.AddModelToTask("simTask", mag)
+        r.magModule = mag
+        r.magRec = mag.envOutMsgs[0].recorder(self._rec)
+        self._sim.AddModelToTask("simTask", r.magRec)
+
+    def _build_magnet(self, r):
+        pm = PermanentMagnet()
+        pm.ModelTag = "PermanentMagnet"
+        pm.magDipole_B = np.array(self.config.dipole_body_am2)
+        pm.magFieldInMsg.subscribeTo(r.magModule.envOutMsgs[0])
+        r.scObject.addDynamicEffector(pm)
+        self._sim.AddModelToTask("simTask", pm)
+        r.permMagnet = pm
+        r.pmTorqueRec = pm.cmdTorqueOutMsg.recorder(self._rec)
+        self._sim.AddModelToTask("simTask", r.pmTorqueRec)
+
+    def _build_power(self, r):
+        cfg = self.config
+        power_system = PowerSystem(battery_capacity_wh=cfg.battery_capacity_wh,
+                                   initial_soc=cfg.battery_initial_soc)
+        payload = Payload() if cfg.enable_payload else None
+        sunIdx = r.gravFactory.spicePlanetNames.index("sun")
+        sunStateMsg = r.spiceObject.planetStateOutMsgs[sunIdx]
+        manager = PowerManager(power_system, r.scObject.scStateOutMsg, sunStateMsg, payload=payload)
+        powerTask = self._sim.CreateNewTask("powerTask", macros.sec2nano(cfg.power_update_period_s))
+        self._sim.AddModelToTask("powerTask", manager)
+        self._process.addTask(powerTask)
+        r.power_system = power_system
+        r.payload = payload
+        r.power_manager = manager
+
+    def _build_rods(self, r):
+        cfg = self.config
+        factory = HysteresisFactory(self._sim, r.scObject, r.magModule)
+        for tag, axis, json_path in ROD_LAYOUT:
+            r.rods[tag] = factory.add_rod(length_m=cfg.rod_length_m, diameter_m=cfg.rod_diameter_m,
+                                          axis_B=axis, json_path=json_path, tag=tag)
+        for tag, rod in r.rods.items():
+            rec = rod.torqueLogOutMsg.recorder(self._rec)
+            self._sim.AddModelToTask("simTask", rec)
+            r.torque_recorders[tag] = rec
+        r.hystRecorders = {label: r.rods[tag].hysteresisDebugOutMsg.recorder(self._rec)
+                           for label, tag in (("Z", "HystRod_Z1"), ("X", "HystRod_X1"),
+                                              ("D", "HystRod_D1"))}
+        for rec in r.hystRecorders.values():
+            self._sim.AddModelToTask("simTask", rec)
+
+    def _build_monitors(self, r):
+        r.scStateRec = r.scObject.scStateOutMsg.recorder(self._rec)
+        self._sim.AddModelToTask("simTask", r.scStateRec)
+        self._process.addTask(self._sim.CreateNewTask("printTask",
+                                                      macros.sec2nano(self.config.print_period_s)))
+        self._sim.AddModelToTask("printTask", OrientationMonitor(r.scObject.scStateOutMsg))
+
+    def _maybe_enable_viz(self, r):
+        cfg = self.config
+        if cfg.enable_viz and vizSupport.vizFound:
+            out = cfg.vizard_output or os.path.join(os.getcwd(), "viz")
+            vizSupport.enableUnityVisualization(self._sim, "simTask", r.scObject, saveFile=out)
 
 
 if __name__ == "__main__":
-    run()
+    print("base.py is the experiment base library -- it does not run on its own.\n"
+          "Run a specific experiment, e.g.:\n"
+          "  python sims/experiments/detumble_full.py\n"
+          "  python sims/experiments/graph_power_states.py")
