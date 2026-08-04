@@ -1,49 +1,59 @@
 """
-base.py
-Experiment base for PEROVSAT simulations.
+base.py — Experiment base class for PEROVSAT Basilisk simulations.
 
-Assembles the fundamental simulation (spacecraft, orbit, WMM, permanent
-magnet, hysteresis rods, power system, payload) and exposes every handle and
-recorder on a SimulationResults object. It never plots or interprets anything
--- that belongs to specific experiments in sims/experiments/.
+An "experiment" is a subclass of ExperimentBase that:
+  * overrides class-level parameters it cares about (spacecraft properties,
+    duration, which subsystems are active, battery size, ...),
+  * overrides devices() / solar_cells() to say which SimulatedDevices and
+    SolarCells exist for this run,
+  * overrides postprocess() for its own custom analysis/plots.
 
-Create an experiment by subclassing BaseExperiment: override configure() to
-set parameters and analyze() to interpret results.
+base.py itself should basically never need to change -- only touch it when
+adding a genuinely new subsystem (a new dynamic effector, a new environment
+model, etc). Everything experiment-specific belongs in the experiment file.
+Never create a new experiment by copy-pasting this file: subclass it.
 
-    class MyExperiment(BaseExperiment):
-        def configure(self):
-            self.config.sim_duration_s = 3600.0
-            self.config.enable_rods = False
-        def analyze(self, results):
-            results.power_system.plot_history("power_states.png")
+Minimal example (see sims/graph_power_states.py / sims/detumble_experiment.py
+for full examples):
 
-    MyExperiment().main()               # or MyExperiment(sim_duration_s=7200).main()
+    from base import ExperimentBase
 
-base.py should only change when a genuinely new subsystem is added: wire it up
-in build() (a small _build_* step) and expose its recorder on
-SimulationResults so every experiment can reach it.
+    class MyExperiment(ExperimentBase):
+        SIM_DURATION_S = 3600.0
+
+        def devices(self):
+            return [...]
+
+        def solar_cells(self):
+            return [...]
+
+        def postprocess(self):
+            # self.power_manager, self.recorders, self.scObject, etc. are
+            # all populated by now -- do your custom plotting/analysis here.
+            ...
+
+    if __name__ == "__main__":
+        MyExperiment().run()
 """
 
 import os
 import sys
-from dataclasses import dataclass, field
-from typing import Any, Optional
 
 import numpy as np
 
+from Basilisk.architecture import sysModel
 from Basilisk.simulation import magneticFieldWMM, spacecraft, svIntegrators
 from Basilisk.utilities import SimulationBaseClass, macros, vizSupport
 from Basilisk.utilities.supportDataTools.dataFetcher import DataFile, get_path
 
 # ---------------------------------------------------------------------------
-# Path setup & imports
+# Path setup & Imports
 # ---------------------------------------------------------------------------
 _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(_root, "PythonModules"))
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))   # sims/ (sysmodels)
 
 try:
-    import perovsat_plugins.messaging          # noqa: F401  (registers recorders)
+    import perovsat_plugins.messaging
     from perovsat_plugins.permanentMagnet import PermanentMagnet
 except ImportError as exc:
     raise ImportError(f"Compiled plugin modules not found.\nOriginal error: {exc}") from exc
@@ -51,260 +61,268 @@ except ImportError as exc:
 from issOrbit import set_iss_orbit
 from hysteresisFactory import HysteresisFactory
 from solarSystemFactory import setup_solar_system, wire_wmm_epoch
-from power_system import PowerSystem
-from payload_iv import Payload
-from sysmodels import OrientationMonitor, PowerManager
-
-# ---------------------------------------------------------------------------
-# Fixed references (not per-experiment tunable)
-# ---------------------------------------------------------------------------
-EPOCH_UTC_SUMMER = "2026 JUN 21 12:00:00.0 (UTC)"
-EPOCH_UTC_WINTER = "2026 DEC 21 12:00:00.0 (UTC)"
-
-_configs_dir = os.path.join(_root, "hysteresis_configs")
-Z_JSON = os.path.join(_configs_dir, "hymu80_z_axis.json")
-XY_JSON = os.path.join(_configs_dir, "hymu80_xy_axis.json")
-
-INV_SQRT2 = 0.70710678118654752
-
-# 8-rod HyMu80 PMAC layout: (tag, body axis, material JSON).
-ROD_LAYOUT = [
-    ("HystRod_Z1", [0.0, 0.0, 1.0], Z_JSON),
-    ("HystRod_Z2", [0.0, 0.0, 1.0], Z_JSON),
-    ("HystRod_X1", [1.0, 0.0, 0.0], XY_JSON),
-    ("HystRod_X2", [1.0, 0.0, 0.0], XY_JSON),
-    ("HystRod_Y1", [0.0, 1.0, 0.0], XY_JSON),
-    ("HystRod_Y2", [0.0, 1.0, 0.0], XY_JSON),
-    ("HystRod_D1", [INV_SQRT2,  INV_SQRT2, 0.0], XY_JSON),
-    ("HystRod_D2", [INV_SQRT2, -INV_SQRT2, 0.0], XY_JSON),
-]
+from sim_state import SimulationState
+from power_management import create_power_manager
 
 
-# ---------------------------------------------------------------------------
-# Experiment configuration
-# ---------------------------------------------------------------------------
-@dataclass
-class ExperimentConfig:
-    """Every per-experiment knob. Subclasses tweak these in configure()."""
-    # timing
-    sim_duration_s: float = 3600.0
-    timestep_s: float = 0.5
-    record_period_s: float = 1.0
-    power_update_period_s: float = 0.5
-    print_period_s: float = 3600.0
-    # epoch
-    epoch_utc: str = EPOCH_UTC_SUMMER
-    # spacecraft
-    mass_kg: float = 1.2
-    inertia_kgm2: tuple = ((0.002, 0.0, 0.0),
-                           (0.0, 0.002, 0.0),
-                           (0.0, 0.0, 0.001))
-    sigma_init: tuple = (0.2, -0.1, 0.3)
-    omega_init_rads: tuple = (0.05, 0.07, 0.02)
-    dipole_body_am2: tuple = (0.0, 0.0, 0.15)
-    # hysteresis rods
-    rod_diameter_m: float = 0.002
-    rod_length_m: float = 0.095
-    # subsystem toggles
-    enable_perm_magnet: bool = True
-    enable_rods: bool = True
-    enable_power: bool = True
-    enable_payload: bool = True
-    enable_viz: bool = False
-    # power system
-    battery_capacity_wh: float = 100.0
-    battery_initial_soc: float = 0.8
-    # output
-    vizard_output: Optional[str] = None
+class OrientationMonitor(sysModel.SysModel):
+    """Periodic console printout of attitude/rate. Generic utility -- every
+    experiment gets it for free via INCLUDE_ORIENTATION_PRINTOUT."""
+
+    def __init__(self, scStateOutMsg):
+        super().__init__()
+        self.ModelTag = "OrientationMonitor"
+        self.scStateOutMsg = scStateOutMsg
+
+    def UpdateState(self, currentSimNanos):
+        state = self.scStateOutMsg.read()
+        t_s = currentSimNanos * macros.NANO2SEC
+        sigma = state.sigma_BN
+        omega_deg = np.degrees(state.omega_BN_B)
+        omega_mag_deg = np.degrees(np.linalg.norm(state.omega_BN_B))
+        print(
+            f"t={t_s:10.1f}s  sigma_BN=[{sigma[0]:+.4f}, {sigma[1]:+.4f}, {sigma[2]:+.4f}]"
+            f"  omega_BN_B=[{omega_deg[0]:+.4f}, {omega_deg[1]:+.4f}, {omega_deg[2]:+.4f}] deg/s"
+            f"  |omega|={omega_mag_deg:.4f} deg/s"
+        )
 
 
-# ---------------------------------------------------------------------------
-# Simulation results container (everything an experiment might plot)
-# ---------------------------------------------------------------------------
-@dataclass
-class SimulationResults:
-    config: ExperimentConfig
-    scSim: Any = None
-    scObject: Any = None
-    integrator: Any = None   # MUST be kept alive: SWIG won't, and scObject
-                             # holds only a raw pointer -> GC = segfault.
-    gravFactory: Any = None
-    spiceObject: Any = None
-    magModule: Any = None
-    permMagnet: Any = None
-    power_system: Any = None
-    payload: Any = None
-    power_manager: Any = None
-    rods: dict = field(default_factory=dict)
-    # recorders
-    scStateRec: Any = None
-    magRec: Any = None
-    pmTorqueRec: Any = None
-    torque_recorders: dict = field(default_factory=dict)
-    hystRecorders: dict = field(default_factory=dict)
-
-
-# ---------------------------------------------------------------------------
-# Base experiment
-# ---------------------------------------------------------------------------
-class BaseExperiment:
+class ExperimentBase:
     """
-    Assembles and runs the PEROVSAT simulation. Subclass it, override
-    configure() to set parameters and analyze() to interpret/plot results.
+    Every parameter below is a class attribute, so a subclass overrides one
+    simply by re-declaring it -- no __init__ override needed for the common
+    case. Subsystems can be switched off entirely with the INCLUDE_* flags
+    for lightweight experiments that don't need them (e.g. a pure power-model
+    experiment doesn't need hysteresis rods).
     """
-    Config = ExperimentConfig
 
-    def __init__(self, **overrides):
-        # Precedence: dataclass defaults < configure() < constructor overrides.
-        # Config(**overrides) validates the keys; configure() sets the
-        # experiment's baseline; then we re-apply overrides so an explicit
-        # kwarg always wins over configure() rather than being clobbered by it.
-        self.config = self.Config(**overrides)
-        self.configure()
-        for key, value in overrides.items():
-            setattr(self.config, key, value)
+    # ---- Spacecraft ----
+    MASS_KG = 1.2
+    INERTIA_KGM2 = [[0.002, 0.0, 0.0],
+                    [0.0, 0.002, 0.0],
+                    [0.0, 0.0, 0.001]]
+    SIGMA_INIT = [[0.2], [-0.1], [0.3]]
+    OMEGA_INIT_RADS = [[0.05], [0.07], [0.02]]
 
-    # -- hooks for subclasses -------------------------------------------
-    def configure(self):
-        """Override to adjust self.config before the simulation is built."""
+    EPOCH_UTC = "2026 JUN 21 12:00:00.0 (UTC)"
 
-    def analyze(self, results):
-        """Override to print/plot experiment-specific output after the run."""
+    # ---- Timing ----
+    SIM_DURATION_S = 3600.0
+    TIMESTEP_S = 0.5
+    RECORD_PERIOD_S = 1.0
+    PRINT_PERIOD_S = 3600.0
+    POWER_UPDATE_PERIOD_S = None   # None -> defaults to TIMESTEP_S
 
-    # -- lifecycle ------------------------------------------------------
-    def build(self) -> SimulationResults:
-        """Assemble the simulation from self.config; return SimulationResults."""
-        cfg = self.config
-        self._sim = SimulationBaseClass.SimBaseClass()
-        self._sim.SetProgressBar(False)
-        self._process = self._sim.CreateNewProcess("simProcess")
-        self._process.addTask(self._sim.CreateNewTask("simTask", macros.sec2nano(cfg.timestep_s)))
-        self._rec = macros.sec2nano(cfg.record_period_s)
+    # ---- Subsystem toggles ----
+    INCLUDE_PERMANENT_MAGNET = True
+    INCLUDE_HYSTERESIS_RODS = True
+    INCLUDE_POWER_MANAGEMENT = True
+    INCLUDE_ORIENTATION_PRINTOUT = True
+    INCLUDE_VIZARD = True
 
-        r = SimulationResults(config=cfg, scSim=self._sim)
-        self._build_spacecraft(r)
-        self._build_environment(r)
-        if cfg.enable_perm_magnet:
-            self._build_magnet(r)
-        if cfg.enable_power:
-            self._build_power(r)
-        if cfg.enable_rods:
-            self._build_rods(r)
-        self._build_monitors(r)
-        self._maybe_enable_viz(r)
-        return r
+    # ---- Permanent magnet ----
+    DIPOLE_BODY_AM2 = np.array([0.0, 0.0, 0.15])
 
-    def run(self) -> SimulationResults:
-        """Build and execute the simulation; return the populated results."""
-        cfg = self.config
-        r = self.build()
-        r.scSim.InitializeSimulation()
-        print(f"\n[sim] running {cfg.sim_duration_s:.0f} s "
-              f"({cfg.sim_duration_s / 3600.0:.2f} h) at dt={cfg.timestep_s}s ...\n")
-        r.scSim.ConfigureStopTime(macros.sec2nano(cfg.sim_duration_s))
-        r.scSim.ExecuteSimulation()
-        print(f"\n[sim] complete: simulated {cfg.sim_duration_s:.0f} s "
-              f"({cfg.sim_duration_s / 3600.0:.2f} h)\n")
-        return r
+    # ---- Hysteresis rods ----
+    ROD_DIAMETER_M = 0.002
+    ROD_LENGTH_M = 0.095
+    INV_SQRT2 = 0.70710678118654752
+    ROD_DEFS = None     # None -> _default_rod_defs()
 
-    def main(self) -> SimulationResults:
-        """Run the simulation, then hand results to analyze()."""
-        results = self.run()
-        self.analyze(results)
-        return results
+    # ---- Power management ----
+    BATTERY_CAPACITY_WH = 100.0
+    BATTERY_INITIAL_SOC = 0.8
 
-    # -- build steps (each wires one subsystem onto self._sim) ----------
-    def _build_spacecraft(self, r):
-        cfg = self.config
-        sc = spacecraft.Spacecraft()
-        sc.ModelTag = "PEROVSAT"
-        sc.hub.mHub = cfg.mass_kg
-        sc.hub.IHubPntBc_B = [list(row) for row in cfg.inertia_kgm2]
-        sc.hub.sigma_BNInit = [[v] for v in cfg.sigma_init]
-        sc.hub.omega_BN_BInit = [[v] for v in cfg.omega_init_rads]
-        # Keep the integrator alive on r: SWIG doesn't, and scObject holds only
-        # a raw pointer, so GC after build() returns would segfault the run.
-        integrator = svIntegrators.svIntegratorRKF45(sc)
-        sc.setIntegrator(integrator)
-        self._sim.AddModelToTask("simTask", sc)
-        r.scObject = sc
-        r.integrator = integrator
+    # ---- Output ----
+    VIZARD_OUTPUT = None   # None -> derived from the experiment file's path
 
-    def _build_environment(self, r):
-        cfg = self.config
-        gravFactory, spiceObject = setup_solar_system(self._sim, r.scObject, "simTask", cfg.epoch_utc)
-        set_iss_orbit(r.scObject, gravFactory.gravBodies["earth"].mu)
-        r.gravFactory = gravFactory
-        r.spiceObject = spiceObject
+    def __init__(self):
+        self.scSim = None
+        self.dynProcess = None
+        self.scObject = None
+        self.gravFactory = None
+        self.spiceObject = None
+        self.magModule = None
+        self.permMagnet = None
+        self.rods = {}
+        self.sim_state = None
+        self.power_manager = None
+        self.recorders = {}     # name -> recorder (or dict of recorders)
 
-        mag = magneticFieldWMM.MagneticFieldWMM()
-        mag.ModelTag = "WMM"
-        mag.configureWMMFile(str(get_path(DataFile.MagneticFieldData.WMM)))
-        mag.addSpacecraftToModel(r.scObject.scStateOutMsg)
-        wire_wmm_epoch(mag, gravFactory, spiceObject)
-        self._sim.AddModelToTask("simTask", mag)
-        r.magModule = mag
-        r.magRec = mag.envOutMsgs[0].recorder(self._rec)
-        self._sim.AddModelToTask("simTask", r.magRec)
+    # ------------------------------------------------------------------
+    # Extension points -- override in subclasses
+    # ------------------------------------------------------------------
+    def devices(self):
+        """SimulatedDevice instances active for this experiment. Construct
+        fresh instances here (not as class attributes) so re-running the
+        experiment doesn't reuse stale device state."""
+        return []
 
-    def _build_magnet(self, r):
-        pm = PermanentMagnet()
-        pm.ModelTag = "PermanentMagnet"
-        pm.magDipole_B = np.array(self.config.dipole_body_am2)
-        pm.magFieldInMsg.subscribeTo(r.magModule.envOutMsgs[0])
-        r.scObject.addDynamicEffector(pm)
-        self._sim.AddModelToTask("simTask", pm)
-        r.permMagnet = pm
-        r.pmTorqueRec = pm.cmdTorqueOutMsg.recorder(self._rec)
-        self._sim.AddModelToTask("simTask", r.pmTorqueRec)
+    def solar_cells(self):
+        """SolarCell instances active for this experiment."""
+        return []
 
-    def _build_power(self, r):
-        cfg = self.config
-        power_system = PowerSystem(battery_capacity_wh=cfg.battery_capacity_wh,
-                                   initial_soc=cfg.battery_initial_soc)
-        payload = Payload() if cfg.enable_payload else None
-        sunIdx = r.gravFactory.spicePlanetNames.index("sun")
-        sunStateMsg = r.spiceObject.planetStateOutMsgs[sunIdx]
-        manager = PowerManager(power_system, r.scObject.scStateOutMsg, sunStateMsg, payload=payload)
-        powerTask = self._sim.CreateNewTask("powerTask", macros.sec2nano(cfg.power_update_period_s))
-        self._sim.AddModelToTask("powerTask", manager)
-        self._process.addTask(powerTask)
-        r.power_system = power_system
-        r.payload = payload
-        r.power_manager = manager
+    def postprocess(self):
+        """Called once after ExecuteSimulation(). Override for custom
+        analysis/graphing -- self.recorders / self.power_manager /
+        self.scObject / self.rods are all populated by then."""
+        pass
 
-    def _build_rods(self, r):
-        cfg = self.config
-        factory = HysteresisFactory(self._sim, r.scObject, r.magModule)
-        for tag, axis, json_path in ROD_LAYOUT:
-            r.rods[tag] = factory.add_rod(length_m=cfg.rod_length_m, diameter_m=cfg.rod_diameter_m,
-                                          axis_B=axis, json_path=json_path, tag=tag)
-        for tag, rod in r.rods.items():
-            rec = rod.torqueLogOutMsg.recorder(self._rec)
-            self._sim.AddModelToTask("simTask", rec)
-            r.torque_recorders[tag] = rec
-        r.hystRecorders = {label: r.rods[tag].hysteresisDebugOutMsg.recorder(self._rec)
-                           for label, tag in (("Z", "HystRod_Z1"), ("X", "HystRod_X1"),
-                                              ("D", "HystRod_D1"))}
-        for rec in r.hystRecorders.values():
-            self._sim.AddModelToTask("simTask", rec)
+    # ------------------------------------------------------------------
+    def _configs_dir(self):
+        return os.path.join(_root, "hysteresis_configs")
 
-    def _build_monitors(self, r):
-        r.scStateRec = r.scObject.scStateOutMsg.recorder(self._rec)
-        self._sim.AddModelToTask("simTask", r.scStateRec)
-        self._process.addTask(self._sim.CreateNewTask("printTask",
-                                                      macros.sec2nano(self.config.print_period_s)))
-        self._sim.AddModelToTask("printTask", OrientationMonitor(r.scObject.scStateOutMsg))
+    def _default_rod_defs(self):
+        cd = self._configs_dir()
+        z_json = os.path.join(cd, "hymu80_z_axis.json")
+        xy_json = os.path.join(cd, "hymu80_xy_axis.json")
+        return [
+            ("HystRod_Z1", [0.0, 0.0, 1.0], z_json),
+            ("HystRod_Z2", [0.0, 0.0, 1.0], z_json),
+            ("HystRod_X1", [1.0, 0.0, 0.0], xy_json),
+            ("HystRod_X2", [1.0, 0.0, 0.0], xy_json),
+            ("HystRod_Y1", [0.0, 1.0, 0.0], xy_json),
+            ("HystRod_Y2", [0.0, 1.0, 0.0], xy_json),
+            ("HystRod_D1", [self.INV_SQRT2, self.INV_SQRT2, 0.0], xy_json),
+            ("HystRod_D2", [self.INV_SQRT2, -self.INV_SQRT2, 0.0], xy_json),
+        ]
 
-    def _maybe_enable_viz(self, r):
-        cfg = self.config
-        if cfg.enable_viz and vizSupport.vizFound:
-            out = cfg.vizard_output or os.path.join(os.getcwd(), "viz")
-            vizSupport.enableUnityVisualization(self._sim, "simTask", r.scObject, saveFile=out)
+    # ------------------------------------------------------------------
+    # Build: all the Basilisk wiring. Should essentially never change per
+    # experiment; add a whole new _setup_* method here only when a genuinely
+    # new subsystem/feature is implemented, and gate it behind its own
+    # INCLUDE_* flag so existing experiments are unaffected.
+    # ------------------------------------------------------------------
+    def build(self):
+        self.scSim = SimulationBaseClass.SimBaseClass()
+        self.scSim.SetProgressBar(False)
 
+        self.dynProcess = self.scSim.CreateNewProcess("simProcess")
+        self.dynProcess.addTask(self.scSim.CreateNewTask("simTask", macros.sec2nano(self.TIMESTEP_S)))
 
-if __name__ == "__main__":
-    print("base.py is the experiment base library -- it does not run on its own.\n"
-          "Run a specific experiment, e.g.:\n"
-          "  python sims/experiments/detumble_full.py\n"
-          "  python sims/experiments/graph_power_states.py")
+        self._setup_spacecraft()
+        self._setup_environment()
+        if self.INCLUDE_PERMANENT_MAGNET:
+            self._setup_permanent_magnet()
+        if self.INCLUDE_HYSTERESIS_RODS:
+            self._setup_hysteresis_rods()
+        if self.INCLUDE_POWER_MANAGEMENT:
+            self._setup_power_management()
+        if self.INCLUDE_ORIENTATION_PRINTOUT:
+            self._setup_orientation_printout()
+        if self.INCLUDE_VIZARD:
+            self._setup_vizard()
+
+    def _setup_spacecraft(self):
+        scObject = spacecraft.Spacecraft()
+        scObject.ModelTag = "PEROVSAT"
+        scObject.hub.mHub = self.MASS_KG
+        scObject.hub.IHubPntBc_B = self.INERTIA_KGM2
+        scObject.hub.sigma_BNInit = self.SIGMA_INIT
+        scObject.hub.omega_BN_BInit = self.OMEGA_INIT_RADS
+
+        self.integrator = svIntegrators.svIntegratorRKF45(scObject)
+        scObject.setIntegrator(self.integrator)
+        self.scSim.AddModelToTask("simTask", scObject)
+        self.scObject = scObject
+
+    def _setup_environment(self):
+        gravFactory, spiceObject = setup_solar_system(self.scSim, self.scObject, "simTask", self.EPOCH_UTC)
+        set_iss_orbit(self.scObject, gravFactory.gravBodies["earth"].mu)
+        self.gravFactory = gravFactory
+        self.spiceObject = spiceObject
+
+        magModule = magneticFieldWMM.MagneticFieldWMM()
+        magModule.ModelTag = "WMM"
+        magModule.configureWMMFile(str(get_path(DataFile.MagneticFieldData.WMM)))
+        magModule.addSpacecraftToModel(self.scObject.scStateOutMsg)
+        wire_wmm_epoch(magModule, gravFactory, spiceObject)
+        self.scSim.AddModelToTask("simTask", magModule)
+        self.magModule = magModule
+
+        rec_period = macros.sec2nano(self.RECORD_PERIOD_S)
+        magRec = magModule.envOutMsgs[0].recorder(rec_period)
+        self.scSim.AddModelToTask("simTask", magRec)
+        self.recorders["mag"] = magRec
+
+        scStateRec = self.scObject.scStateOutMsg.recorder(rec_period)
+        self.scSim.AddModelToTask("simTask", scStateRec)
+        self.recorders["scState"] = scStateRec
+
+        sunIdx = gravFactory.spicePlanetNames.index("sun")
+        self.sunStateMsg = spiceObject.planetStateOutMsgs[sunIdx]
+
+    def _setup_permanent_magnet(self):
+        permMagnet = PermanentMagnet()
+        permMagnet.ModelTag = "PermanentMagnet"
+        permMagnet.magDipole_B = self.DIPOLE_BODY_AM2
+        permMagnet.magFieldInMsg.subscribeTo(self.magModule.envOutMsgs[0])
+        self.scObject.addDynamicEffector(permMagnet)
+        self.scSim.AddModelToTask("simTask", permMagnet)
+        self.permMagnet = permMagnet
+
+        pmTorqueRec = permMagnet.cmdTorqueOutMsg.recorder(macros.sec2nano(self.RECORD_PERIOD_S))
+        self.scSim.AddModelToTask("simTask", pmTorqueRec)
+        self.recorders["pmTorque"] = pmTorqueRec
+
+    def _setup_hysteresis_rods(self):
+        self.rod_factory = HysteresisFactory(self.scSim, self.scObject, self.magModule)
+        rod_defs = self.ROD_DEFS or self._default_rod_defs()
+        rec_period = macros.sec2nano(self.RECORD_PERIOD_S)
+
+        rods, torque_recorders, hyst_recorders = {}, {}, {}
+        for tag, axis, json_path in rod_defs:
+            rod = self.rod_factory.add_rod(length_m=self.ROD_LENGTH_M, diameter_m=self.ROD_DIAMETER_M,
+                                      axis_B=axis, json_path=json_path, tag=tag)
+            rods[tag] = rod
+            rec = rod.torqueLogOutMsg.recorder(rec_period)
+            self.scSim.AddModelToTask("simTask", rec)
+            torque_recorders[tag] = rec
+
+        for axis_tag, rod_tag in (("Z", "HystRod_Z1"), ("X", "HystRod_X1"), ("D", "HystRod_D1")):
+            if rod_tag in rods:
+                rec = rods[rod_tag].hysteresisDebugOutMsg.recorder(rec_period)
+                self.scSim.AddModelToTask("simTask", rec)
+                hyst_recorders[axis_tag] = rec
+
+        self.rods = rods
+        self.recorders["rodTorques"] = torque_recorders
+        self.recorders["hysteresis"] = hyst_recorders
+
+    def _setup_power_management(self):
+        sim_state = SimulationState(self.scObject.scStateOutMsg, self.sunStateMsg)
+        power_manager, task = create_power_manager(
+            self.scSim, self.devices(), sim_state, self.solar_cells(),
+            battery_capacity_wh=self.BATTERY_CAPACITY_WH,
+            battery_initial_soc=self.BATTERY_INITIAL_SOC,
+            update_period_s=self.POWER_UPDATE_PERIOD_S or self.TIMESTEP_S,
+        )
+        self.power_task = task
+        self.dynProcess.addTask(self.power_task)
+        self.sim_state = sim_state
+        self.power_manager = power_manager
+
+    def _setup_orientation_printout(self):
+        # NOTE: both objects below MUST be kept as self.* attributes, not just
+        # local variables -- Basilisk's C++ scheduler calls back into them
+        # every step via a raw reference, so if nothing in Python holds onto
+        # them they get garbage-collected as soon as this method returns
+        # (before ExecuteSimulation() ever runs), which segfaults.
+        self.print_task = self.scSim.CreateNewTask("printTask", macros.sec2nano(self.PRINT_PERIOD_S))
+        self.dynProcess.addTask(self.print_task)
+        self.orientation_monitor = OrientationMonitor(self.scObject.scStateOutMsg)
+        self.scSim.AddModelToTask("printTask", self.orientation_monitor)
+
+    def _setup_vizard(self):
+        if not vizSupport.vizFound:
+            return
+        output = self.VIZARD_OUTPUT or os.path.splitext(os.path.abspath(sys.argv[0]))[0]
+        vizSupport.enableUnityVisualization(self.scSim, "simTask", self.scObject, saveFile=output)
+
+    # ------------------------------------------------------------------
+    def run(self):
+        self.build()
+        self.scSim.InitializeSimulation()
+        self.scSim.ConfigureStopTime(macros.sec2nano(self.SIM_DURATION_S))
+        self.scSim.ExecuteSimulation()
+        self.postprocess()
