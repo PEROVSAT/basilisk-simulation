@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "simulated-amu"
+version = "0.1.0"
+description = "Simulated AMU (Aerospace Measurement Unit) for PEROVSAT CubeSat -- generates I-V curves from PV cells."
+requires-python = ">=3.9"
+dependencies = ["numpy>=1.24"]
+
+[project.optional-dependencies]
+sim = ["bsk>=2.10.2"]
+test = ["pytest"]
+
+[tool.setuptools.packages.find]
+include = ["simulated_amu*"]
