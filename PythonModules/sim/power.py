@@ -1,87 +1,100 @@
-"""
-sim/power.py
-Power manager: sums device draw, sums solar generation, tracks battery.
-"""
+"""Basilisk native power stack for PEROVSAT (panels, sinks, battery)."""
 
-import numpy as np
-from Basilisk.architecture import sysModel
-from Basilisk.utilities import macros
+from __future__ import annotations
 
+from dataclasses import dataclass
 
-class PowerManager(sysModel.SysModel):
-    """Basilisk task that updates the power system each step."""
+from Basilisk.simulation import simpleBattery, simplePowerSink, simpleSolarPanel
 
-    def __init__(self, devices, sim_state, solar_cells,
-                 battery_capacity_wh, battery_initial_soc):
-        super().__init__()
-        self.ModelTag = "PowerManager"
-        self.devices = list(devices)
-        self.sim_state = sim_state
-        self.solar_cells = list(solar_cells)
-        self.battery_capacity_wh = battery_capacity_wh
-        self.energy_wh = battery_capacity_wh * max(0.0, min(1.0, battery_initial_soc))
-        self.soc = self.energy_wh / battery_capacity_wh
-        self.is_charging = False
-        self.history = []
+from devices.catalog import iter_sink_watts
 
-    def get_total_consumption_w(self):
-        return sum(d.get_power() for d in self.devices)
-
-    def get_total_generation_w(self):
-        s = self.sim_state
-        return sum(c.power_w(s.sun_direction_body, s.shadow_factor,
-                             s.sun_distance_factor) for c in self.solar_cells)
-
-    def UpdateState(self, currentSimNanos):
-        dt_s = self.sim_state.update(currentSimNanos)
-        if dt_s <= 0.0:
-            return
-
-        gen_w = self.get_total_generation_w()
-        con_w = self.get_total_consumption_w()
-        net_w = gen_w - con_w
-        self.is_charging = net_w > 0
-
-        energy_change_wh = net_w * dt_s / 3600.0
-        self.energy_wh = max(0.0, min(self.battery_capacity_wh,
-                                     self.energy_wh + energy_change_wh))
-        self.soc = self.energy_wh / self.battery_capacity_wh
-
-        self.history.append({
-            'time_s': self.sim_state.sim_time_s,
-            'generation_w': gen_w,
-            'consumption_w': con_w,
-            'net_power_w': net_w,
-            'soc': self.soc,
-            'energy_wh': self.energy_wh,
-            'eclipsed': self.sim_state.shadow_factor < 0.5,
-        })
-
-    def print_summary(self):
-        print("\n" + "=" * 60)
-        print("PEROVSAT POWER SYSTEM STATUS")
-        print("=" * 60)
-        print(f"Battery SOC: {self.soc * 100:.1f}% "
-              f"({self.energy_wh:.2f} Wh / {self.battery_capacity_wh} Wh)")
-        print(f"Total Consumption: {self.get_total_consumption_w():.3f} W")
-        if self.history:
-            gen = [h['generation_w'] for h in self.history]
-            ecl = [h['eclipsed'] for h in self.history]
-            print(f"Mean Generation: {sum(gen)/len(gen):.3f} W, Peak: {max(gen):.3f} W")
-            print(f"Eclipse fraction: {100.0 * sum(ecl) / len(ecl):.1f}%")
-        print("\nDevice power breakdown:")
-        for d in sorted(self.devices, key=lambda d: d.name):
-            p = d.get_power()
-            if p > 1e-4:
-                print(f"  {d.name}: {p:.4f} W")
-        print("=" * 60 + "\n")
+_PANEL_NORMALS: dict[str, list[float]] = {
+    "+X": [1.0, 0.0, 0.0],
+    "+Y": [0.0, 1.0, 0.0],
+    "-Y": [0.0, -1.0, 0.0],
+}
+_PANEL_AREA_M2 = 0.008
+_PANEL_EFFICIENCY = 0.23
+_BATTERY_CAPACITY_WH = 100.0
 
 
-def create_power_manager(scSim, devices, sim_state, solar_cells,
-                         battery_capacity_wh=100.0, battery_initial_soc=0.8,
-                         update_period_s=0.5, task_name="powerTask"):
-    pm = PowerManager(devices, sim_state, solar_cells,
-                      battery_capacity_wh, battery_initial_soc)
-    task = scSim.CreateNewTask(task_name, macros.sec2nano(update_period_s))
-    scSim.AddModelToTask(task_name, pm)
-    return pm, task
+@dataclass
+class PowerStack:
+    battery: object
+    panels: dict[str, object]
+    sinks: dict[str, object]
+    recorders: dict
+    capacity_ws: float
+
+
+def setup_power(
+    scSim,
+    task_name,
+    sc_state_msg,
+    sun_state_msg,
+    eclipse_out_msg,
+    record_period_ns,
+    soc=0.8,
+) -> PowerStack:
+    """Wire catalog-average sinks and attitude/eclipse-coupled ``simpleSolarPanel`` generation."""
+    soc = max(0.0, min(1.0, soc))
+    capacity_ws = _BATTERY_CAPACITY_WH * 3600.0
+
+    panels: dict[str, object] = {}
+    panel_recs: dict[str, object] = {}
+    for name, n_hat in _PANEL_NORMALS.items():
+        panel = simpleSolarPanel.SimpleSolarPanel()
+        panel.ModelTag = f"SolarPanel_{name}"
+        panel.setPanelParameters(n_hat, _PANEL_AREA_M2, _PANEL_EFFICIENCY)
+        panel.stateInMsg.subscribeTo(sc_state_msg)
+        panel.sunInMsg.subscribeTo(sun_state_msg)
+        panel.sunEclipseInMsg.subscribeTo(eclipse_out_msg)
+        scSim.AddModelToTask(task_name, panel)
+        panel_recs[name] = _attach_recorder(
+            scSim, task_name, panel.nodePowerOutMsg, record_period_ns
+        )
+        panels[name] = panel
+
+    sinks: dict[str, object] = {}
+    sink_recs: dict[str, object] = {}
+    for sink_name, average_w in iter_sink_watts():
+        sink = simplePowerSink.SimplePowerSink()
+        sink.ModelTag = f"Sink_{sink_name}"
+        sink.nodePowerOut = -average_w
+        scSim.AddModelToTask(task_name, sink)
+        sink_recs[sink_name] = _attach_recorder(
+            scSim, task_name, sink.nodePowerOutMsg, record_period_ns
+        )
+        sinks[sink_name] = sink
+
+    battery = simpleBattery.SimpleBattery()
+    battery.ModelTag = "Battery"
+    battery.storageCapacity = capacity_ws
+    battery.storedCharge_Init = capacity_ws * soc
+    for panel in panels.values():
+        battery.addPowerNodeToModel(panel.nodePowerOutMsg)
+    for sink in sinks.values():
+        battery.addPowerNodeToModel(sink.nodePowerOutMsg)
+    scSim.AddModelToTask(task_name, battery)
+    battery_rec = _attach_recorder(
+        scSim, task_name, battery.batPowerOutMsg, record_period_ns
+    )
+
+    recorders = {
+        "battery": battery_rec,
+        "panels": panel_recs,
+        "sinks": sink_recs,
+    }
+    return PowerStack(
+        battery=battery,
+        panels=panels,
+        sinks=sinks,
+        recorders=recorders,
+        capacity_ws=capacity_ws,
+    )
+
+
+def _attach_recorder(scSim, task_name, msg, period_ns):
+    rec = msg.recorder(period_ns)
+    scSim.AddModelToTask(task_name, rec)
+    return rec
