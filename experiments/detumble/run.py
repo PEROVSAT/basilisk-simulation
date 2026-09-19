@@ -1,18 +1,17 @@
 """PMAC detumble analysis of the standard PEROVSAT sim (1 hour)."""
-import os
-import sys
 
-_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-sys.path.insert(0, os.path.join(_ROOT, "PythonModules"))
+from pathlib import Path
 
-from sim.simulation import PerovSatSimulation, RunConfig
-from sim.plotting import (
+from perovsat.simulation import PerovSatSimulation, RunConfig
+from experiments.plotting import (
     plot_detumble_curve,
     plot_magnetic_field,
     plot_hysteresis_loops,
     plot_rod_torques,
     plot_power_history,
 )
+
+_HERE = Path(__file__).resolve().parent
 
 
 def main():
@@ -21,6 +20,7 @@ def main():
         duration_s=3600.0,
         timestep_s=0.5,
         record_period_s=1.0,
+        output_dir=_HERE / "output",
     ))
     log = sim.run()
     out = sim.output_dir

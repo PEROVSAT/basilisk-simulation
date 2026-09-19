@@ -17,10 +17,14 @@ IMAGE_STAMP         := .build/image.id
 # -it only when stdin is a TTY so `make run` works from scripts/CI.
 TTY_FLAGS := $(shell [ -t 0 ] && echo -it)
 
+# Repo root covers both experiments.* and perovsat.* — no sys.path hacks in Python.
+PYTHONPATH_VAL := $(CONTAINER_WORKSPACE)
+
 DOCKER_RUN = docker run --rm $(TTY_FLAGS) \
 	-v "$(ROOT):$(CONTAINER_WORKSPACE)" \
 	-w "$(CONTAINER_WORKSPACE)" \
 	-e "PATH=$(CONTAINER_WORKSPACE)/$(VENV)/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
+	-e "PYTHONPATH=$(PYTHONPATH_VAL)" \
 	-e PYTHONUNBUFFERED=1 \
 	$(IMAGE)
 
@@ -88,6 +92,7 @@ shell: plugins
 		-v "$(ROOT):$(CONTAINER_WORKSPACE)" \
 		-w "$(CONTAINER_WORKSPACE)" \
 		-e "PATH=$(CONTAINER_WORKSPACE)/$(VENV)/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
+		-e "PYTHONPATH=$(PYTHONPATH_VAL)" \
 		-e PYTHONUNBUFFERED=1 \
 		$(IMAGE) \
 		/bin/bash

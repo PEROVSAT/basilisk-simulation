@@ -1,1 +1,0 @@
-"""PEROVSAT Basilisk vehicle package."""

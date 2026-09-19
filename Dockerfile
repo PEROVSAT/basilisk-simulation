@@ -29,3 +29,4 @@ RUN python -m ensurepip --upgrade \
 
 USER basilisk
 WORKDIR /workspace/basilisk-simulation
+ENV PYTHONPATH=/workspace/basilisk-simulation
