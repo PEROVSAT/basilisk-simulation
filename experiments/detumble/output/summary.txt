@@ -1,0 +1,8 @@
+Experiment: detumble
+Run at: 2026-09-19T05:31:46.960090
+============================================================
+Duration: 1900800.0 s
+Timestep: 10.000 s
+Record period: 20.000 s
+Vizard: on
+Final SOC: 99.7%

@@ -11,7 +11,7 @@ from datetime import datetime
 from pathlib import Path
 
 from Basilisk.simulation import spacecraft, svIntegrators
-from Basilisk.utilities import SimulationBaseClass, macros
+from Basilisk.utilities import SimulationBaseClass, macros, vizSupport
 
 from perovsat import config
 from perovsat._bsk import attach_recorder
@@ -36,6 +36,7 @@ class RunConfig:
     soc_init: float | None = None
     epoch_utc: str | None = None
     output_dir: str | Path | None = None
+    vizard: bool = False
 
 
 class PerovSatSimulation:
@@ -44,6 +45,11 @@ class PerovSatSimulation:
         self.output_dir = Path(cfg.output_dir) if cfg.output_dir else Path("output")
         self.scSim = None
         self.scObject = None
+        self.integrator = None
+        self.env = None
+        self.pmac = None
+        self.power = None
+        self.viz = None
         self.log: SimLog | None = None
 
     def run(self) -> SimLog:
@@ -65,7 +71,7 @@ class PerovSatSimulation:
         print(f"\n{'=' * 60}\nPEROVSAT  {cfg.name}\nOutput: {self.output_dir}\n{'=' * 60}\n")
 
         self.scSim = SimulationBaseClass.SimBaseClass()
-        self.scSim.SetProgressBar(False)
+        self.scSim.SetProgressBar(True)
         process = self.scSim.CreateNewProcess("simProcess")
         process.addTask(self.scSim.CreateNewTask(_TASK, macros.sec2nano(cfg.timestep_s)))
         rec_ns = macros.sec2nano(cfg.record_period_s)
@@ -73,29 +79,34 @@ class PerovSatSimulation:
         # Spacecraft first, then SPICE/WMM/eclipse, then PMAC, then power
         # (panels need sun + eclipse messages that environment publishes).
         self.scObject = self._setup_spacecraft()
-        env = setup_environment(
+        # Keep these on `self`. Basilisk/SWIG stores raw C++ pointers; if the
+        # Python wrappers are collected, ExecuteSimulation segfaults (the
+        # integrator is the usual one; gravBodyFactory.epochMsg is the other).
+        self.env = setup_environment(
             self.scSim, self.scObject, _TASK,
             cfg.epoch_utc or config.EPOCH_UTC, rec_ns,
         )
-        pmac = setup_pmac(self.scSim, self.scObject, env.mag, _TASK, rec_ns)
-        power = setup_power(
+        self.pmac = setup_pmac(self.scSim, self.scObject, self.env.mag, _TASK, rec_ns)
+        self.power = setup_power(
             self.scSim, _TASK,
             self.scObject.scStateOutMsg,
-            env.sun_state_msg,
-            env.eclipse_out_msg,
+            self.env.sun_state_msg,
+            self.env.eclipse_out_msg,
             rec_ns,
             soc=cfg.soc_init,
         )
+        if cfg.vizard:
+            self._setup_vizard()
 
         recorders = {
             "scState": attach_recorder(
                 self.scSim, _TASK, self.scObject.scStateOutMsg, rec_ns
             ),
-            **env.recorders,
-            **pmac.recorders,
-            **power.recorders,
+            **self.env.recorders,
+            **self.pmac.recorders,
+            **self.power.recorders,
         }
-        self.log = SimLog(recorders, power.capacity_ws)
+        self.log = SimLog(recorders, self.power.capacity_ws)
 
     def _setup_spacecraft(self):
         cfg = self.config
@@ -109,9 +120,21 @@ class PerovSatSimulation:
         sc.hub.omega_BN_BInit = (
             cfg.omega_init if cfg.omega_init is not None else config.OMEGA_INIT_RADS
         )
-        sc.setIntegrator(svIntegrators.svIntegratorRKF45(sc))
+        self.integrator = svIntegrators.svIntegratorRKF45(sc)
+        sc.setIntegrator(self.integrator)
         self.scSim.AddModelToTask(_TASK, sc)
         return sc
+
+    def _setup_vizard(self):
+        if not vizSupport.vizFound:
+            print("Vizard support not found; skipping Unity visualization output.")
+            return
+        # Basilisk appends ``_UnityViz.bin`` to this path.
+        save_file = str((self.output_dir / self.config.name).resolve())
+        self.viz = vizSupport.enableUnityVisualization(
+            self.scSim, _TASK, self.scObject, saveFile=save_file,
+        )
+        print(f"Vizard: {save_file}_UnityViz.bin")
 
     def _write_summary(self):
         path = self.output_dir / "summary.txt"
@@ -123,6 +146,7 @@ class PerovSatSimulation:
             f"Duration: {cfg.duration_s:.1f} s",
             f"Timestep: {cfg.timestep_s:.3f} s",
             f"Record period: {cfg.record_period_s:.3f} s",
+            f"Vizard: {'on' if cfg.vizard else 'off'}",
         ]
         if self.log is not None and self.log.power.soc is not None and len(self.log.power.soc):
             lines.append(f"Final SOC: {self.log.power.soc[-1] * 100:.1f}%")

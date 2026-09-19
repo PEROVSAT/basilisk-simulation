@@ -1,5 +1,3 @@
-"""PMAC detumble analysis of the standard PEROVSAT sim (1 hour)."""
-
 from pathlib import Path
 
 from perovsat.simulation import PerovSatSimulation, RunConfig
@@ -8,7 +6,6 @@ from experiments.plotting import (
     plot_magnetic_field,
     plot_hysteresis_loops,
     plot_rod_torques,
-    plot_power_history,
 )
 
 _HERE = Path(__file__).resolve().parent
@@ -17,10 +14,11 @@ _HERE = Path(__file__).resolve().parent
 def main():
     sim = PerovSatSimulation(RunConfig(
         name="detumble",
-        duration_s=3600.0,
-        timestep_s=0.5,
-        record_period_s=1.0,
+        duration_s=22 * 24 * 3600,
+        timestep_s=10,
+        record_period_s=20.0,
         output_dir=_HERE / "output",
+        vizard=True,
     ))
     log = sim.run()
     out = sim.output_dir
@@ -28,7 +26,6 @@ def main():
     plot_magnetic_field(log, out)
     plot_hysteresis_loops(log, out)
     plot_rod_torques(log, out)
-    plot_power_history(log, out)
 
 
 if __name__ == "__main__":
