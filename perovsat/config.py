@@ -49,7 +49,7 @@ ISS_TA_DEG = 85.3
 # Power
 # ---------------------------------------------------------------------------
 
-BATTERY_CAPACITY_WH = 100.0
+BATTERY_CAPACITY_WH = 40.0
 BATTERY_INITIAL_SOC = 0.8
 
 
@@ -107,11 +107,19 @@ DEVICES = (
         "OBC",
         1,
         (
-            DeviceState("idle", 0.01, 0.75),
-            DeviceState("active", 0.1, 0.25),
+            DeviceState("idle", 0.0175, 0.75),
+            DeviceState("active", 0.200, 0.25),
         ),
     ),
-    Device("Eyestar", 1, (DeviceState("transmit", 1.4, 0.1),)),
+    Device(
+        "Eyestar",
+        1,
+        (
+            DeviceState("aquire", 1.4, (4/20)),
+            DeviceState("maintain", 0.574, (4/20)), # These aren't exact, but a rough approximation based on the ICD and pointing issue
+            DeviceState("listen", 0.308, (12/20)),
+        )
+    ),
     Device(
         "IMU",
         1,
@@ -132,8 +140,8 @@ DEVICES = (
         "AMU",
         16,
         (
-            DeviceState("idle", 0.002, 0.95),
-            DeviceState("active", 0.018, 0.05),
+            DeviceState("idle", 0.0, 0.9992),
+            DeviceState("active", 0.5, 0.0007),
         ),
     ),
 )
