@@ -1,16 +1,14 @@
 # syntax=docker/dockerfile:1.7
 #
-# Multi-stage build for PEROVSAT Basilisk simulation.
+# Toolchain + Basilisk runtime. Custom C++ plugins are NOT compiled here;
+# `make plugins` / `make run` / `make shell` compile them against the mounted
+# repo with `pip install --no-build-isolation -e .`.
 #
-# Stage 1 (plugin-builder): compiles the perovsat_plugins wheel using bsk-sdk.
-#   Uses a standard Python slim image so we have access to apt build tools.
-#   bsk-sdk vendors the Basilisk headers, so no BSK source checkout is needed.
-#
-# Stage 2 (runtime): takes the pre-built Basilisk runtime image and layers the
-#   compiled plugin wheel on top.  The final image is what setup.sh runs.
+# Rebuild this image only when Basilisk, Python, or system packages change.
 
-# ── Stage 1: compile perovsat_plugins ────────────────────────────────────────
-FROM python:3.13-slim AS plugin-builder
+FROM ghcr.io/avslab/basilisk:v2.10.2
+
+USER root
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential \
@@ -18,37 +16,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         ninja-build \
     && rm -rf /var/lib/apt/lists/*
 
-# Install build tooling.  swig is fetched from PyPI to guarantee >=4.4.1
-# (the Debian bookworm package ships 4.1.x which is too old for BSK 2.10).
-RUN pip install --no-cache-dir \
-        "bsk==2.10.2" \
+# pip is stripped from the upstream image. SWIG comes from PyPI so we get
+# >=4.4.1 (Debian's package is too old for Basilisk 2.10). Do not pip-install
+# `bsk`: the image already provides Basilisk 2.10.2.
+RUN python -m ensurepip --upgrade \
+    && python -m pip install --no-cache-dir \
         "bsk-sdk==2.10.2" \
         "swig>=4.4.1,<5" \
         "scikit-build-core>=0.9.3" \
         build \
-        "numpy>=1.24"
-
-WORKDIR /src
-COPY pyproject.toml CMakeLists.txt ./
-COPY python/ python/
-COPY ExternalModules/ ExternalModules/
-COPY messages/ messages/
-
-RUN python -m build --wheel --no-isolation --outdir /wheels
-
-# ── Stage 2: Basilisk runtime + perovsat plugin ───────────────────────────────
-FROM ghcr.io/avslab/basilisk:v2.10.2
-
-# Restore pip (removed upstream as a size optimisation), install the plugin
-# wheel and any runtime Python dependencies.  pip is kept so new packages
-# can be added here and rebuilt with ./setup.sh --rebuild.
-USER root
-COPY --from=plugin-builder /wheels/*.whl /tmp/
-RUN python -m ensurepip --upgrade \
-    && python -m pip install --no-cache-dir \
-        /tmp/*.whl \
-        pytest \
-    && rm /tmp/*.whl
+        pytest
 
 USER basilisk
 WORKDIR /workspace/basilisk-simulation
+ENV PYTHONPATH=/workspace/basilisk-simulation

@@ -1,12 +1,4 @@
-# The image build (see Dockerfile) only needs pyproject.toml, CMakeLists.txt,
-# python/, ExternalModules/ and messages/. Everything below is irrelevant to
-# the build and just bloats the context, so keep it out.
-.venv/
-dist/
-.git/
-**/__pycache__/
-*.png
-*.npz
-*.whl
-.DS_Store
-sims/_VizFiles/
+# Image build only needs the Dockerfile. Plugin sources are compiled at
+# runtime from the bind-mounted repo.
+*
+!Dockerfile
