@@ -34,7 +34,7 @@ public:
 
 private:
     StateData *hubSigma; // Pointer to the continuous attitude state
-    MagneticFieldMsgPayload magFieldMsgBuffer;
+    MagneticFieldMsgPayload magFieldMsgBuffer{};
 };
 
 #endif

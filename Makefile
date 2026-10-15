@@ -33,7 +33,7 @@ PLUGIN_SRCS += $(shell find ExternalModules messages python -type f 2>/dev/null)
 
 .DEFAULT_GOAL := help
 
-.PHONY: help docker-check require-image image plugins plugins-force run shell smoke clean image-clean
+.PHONY: help docker-check require-image image plugins plugins-force run shell smoke test clean image-clean
 
 help:
 	@echo "PEROVSAT Basilisk"
@@ -98,7 +98,10 @@ shell: plugins
 		/bin/bash
 
 smoke: plugins
-	$(DOCKER_RUN) python -c "from perovsat_plugins.permanentMagnet import PermanentMagnet; from perovsat_plugins.hyteresisRods import HysteresisRods; print('plugins ok')"
+	$(DOCKER_RUN) python -c "from perovsat_plugins.permanentMagnet import PermanentMagnet; from perovsat_plugins.hysteresisRods import HysteresisRods; print('plugins ok')"
+
+test: plugins
+	$(DOCKER_RUN) python -m unittest discover -s tests -v
 
 clean:
 	rm -rf $(VENV) build dist _skbuild .pytest_cache src/*.egg-info perovsat_plugins.egg-info

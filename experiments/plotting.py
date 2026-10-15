@@ -134,12 +134,13 @@ def plot_hysteresis_loops(log: SimLog, output_dir, filename="hysteresis_loop.png
     for ax, rod in zip(axes, rods):
         H = np.ravel(np.asarray(rod.H, dtype=float))
         M = np.ravel(np.asarray(rod.M, dtype=float))
-        n_pts = min(len(H), len(M))
+        if len(H) != len(M):
+            raise ValueError(f"{rod.tag}: H and M sample counts differ")
+        n_pts = len(H)
         if n_pts == 0:
             ax.text(0.5, 0.5, "NO DATA", transform=ax.transAxes, ha="center", va="center")
             ax.set_title(rod.tag)
             continue
-        H, M = H[:n_pts], M[:n_pts]
         mask = np.isfinite(H) & np.isfinite(M)
         if not np.any(mask):
             ax.text(0.5, 0.5, "NO DATA", transform=ax.transAxes, ha="center", va="center")
@@ -179,11 +180,13 @@ def plot_rod_torques(log: SimLog, output_dir, filename="rod_torques.png"):
     axes = np.atleast_1d(axes).flatten()
 
     for idx, (tag, torque) in enumerate(entries):
-        n_pts = min(len(t_days), len(torque))
+        if len(t_days) != len(torque):
+            raise ValueError(f"{tag}: torque sample count differs from timestamps")
+        n_pts = len(t_days)
         if n_pts == 0:
             continue
-        t_plot = t_days[:n_pts]
-        tau = np.asarray(torque[:n_pts])
+        t_plot = t_days
+        tau = np.asarray(torque)
         axes[idx].plot(t_plot, tau[:, 0], label="x", linewidth=0.5)
         axes[idx].plot(t_plot, tau[:, 1], label="y", linewidth=0.5)
         axes[idx].plot(t_plot, tau[:, 2], label="z", linewidth=0.5)

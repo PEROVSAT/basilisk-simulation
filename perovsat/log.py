@@ -2,11 +2,45 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Protocol, Any
+from dataclasses import dataclass, field
+
+from perovsat.validation import positive
 
 import numpy as np
 
-Recorder = Any
+
+class Recorder(Protocol):
+    def times(self) -> np.ndarray: ...
+    def __getattr__(self, name: str) -> Any: ...
+
+
+@dataclass
+class EnvironmentRecorders:
+    mag: Recorder
+    eclipse: Recorder
+
+
+@dataclass
+class PmacRecorders:
+    pmTorque: Recorder
+    rodTorques: dict[str, Recorder] = field(default_factory=dict)
+    hysteresis: dict[str, Recorder] = field(default_factory=dict)
+
+
+@dataclass
+class PowerRecorders:
+    battery: Recorder
+    panels: dict[str, Recorder] = field(default_factory=dict)
+    sinks: dict[str, Recorder] = field(default_factory=dict)
+
+
+@dataclass
+class SimulationRecorders:
+    scState: Recorder
+    environment: EnvironmentRecorders
+    pmac: PmacRecorders
+    power: PowerRecorders
 
 
 def _as_array(x) -> np.ndarray:
@@ -18,8 +52,8 @@ def _times_s(rec: Recorder | None) -> np.ndarray | None:
         return None
     try:
         return _as_array(rec.times()) * 1e-9
-    except AttributeError:
-        return None
+    except AttributeError as exc:
+        raise ValueError("configured recorder has no times()") from exc
 
 
 def _rec_field(rec: Recorder | None, *names: str) -> np.ndarray | None:
@@ -30,7 +64,26 @@ def _rec_field(rec: Recorder | None, *names: str) -> np.ndarray | None:
             return _as_array(getattr(rec, name))
         except AttributeError:
             continue
-    return None
+    raise ValueError(f"configured recorder is missing field {names}")
+
+
+def _check_recorder(rec: Recorder, reference: np.ndarray, *fields: str) -> None:
+    times = _times_s(rec)
+    if times is None or not np.array_equal(times, reference):
+        raise ValueError("recorder timestamps do not match")
+    if times.ndim != 1 or not np.all(np.isfinite(times)) or np.any(np.diff(times) <= 0):
+        raise ValueError("recorder timestamps must be finite and strictly increasing")
+    for name in fields:
+        values = _rec_field(rec, name)
+        if values.ndim == 0 or len(values) != len(times):
+            raise ValueError(f"{name}: sample count does not match timestamps")
+        vector_fields = {"sigma_BN", "omega_BN_B", "r_BN_N", "magField_N", "torqueRequestBody"}
+        if name in vector_fields and values.shape != (len(times), 3):
+            raise ValueError(f"{name}: expected three-component samples")
+        if name not in vector_fields and values.size != len(times):
+            raise ValueError(f"{name}: expected scalar samples")
+        if not np.all(np.isfinite(values)):
+            raise ValueError(f"{name}: nonfinite samples")
 
 
 class AttitudeLog:
@@ -126,6 +179,7 @@ class PowerLog:
         eclipse_rec: Recorder | None,
         battery_capacity_ws: float,
     ) -> None:
+        positive("battery capacity", battery_capacity_ws)
         self._battery_rec = battery_rec
         self._panel_recs = panel_recs or {}
         self._sink_recs = sink_recs or {}
@@ -142,11 +196,6 @@ class PowerLog:
 
     @property
     def capacity_ws(self) -> float:
-        cap = _rec_field(self._battery_rec, "storageCapacity")
-        if cap is not None and len(cap) > 0:
-            last = float(cap[-1])
-            if last > 0:
-                return last
         return self._battery_capacity_ws
 
     @property
@@ -158,23 +207,16 @@ class PowerLog:
 
     @staticmethod
     def _align_series(arr: np.ndarray, n: int) -> np.ndarray:
-        if n <= 0:
-            return np.zeros(0, dtype=float)
         arr = np.ravel(arr).astype(float, copy=False)
-        if len(arr) == n:
-            return arr
-        out = np.zeros(n, dtype=float)
-        m = min(n, len(arr))
-        out[:m] = arr[:m]
-        return out
+        if len(arr) != n:
+            raise ValueError(f"power sample count {len(arr)} does not match {n}")
+        return arr
 
-    def _aligned_net_power(self, rec: Recorder | None, n: int) -> np.ndarray:
-        if n <= 0:
-            return np.zeros(0, dtype=float)
-        arr = _rec_field(rec, "netPower")
-        if arr is None or len(arr) == 0:
-            return np.zeros(n, dtype=float)
-        return self._align_series(arr, n)
+    def _aligned_net_power(self, rec: Recorder, n: int) -> np.ndarray:
+        if self.t is None:
+            raise ValueError("power nodes require a battery recorder")
+        _check_recorder(rec, self.t, "netPower")
+        return self._align_series(_rec_field(rec, "netPower"), n)
 
     def _sum_net_power(
         self, recs: dict[str, Recorder], n: int, *, as_load: bool
@@ -224,10 +266,6 @@ class PowerLog:
 
     @property
     def net_w(self) -> np.ndarray | None:
-        direct = _rec_field(self._battery_rec, "currentNetPower")
-        if direct is not None:
-            n = len(self.t) if self.t is not None else len(np.ravel(direct))
-            return self._align_series(direct, n)
         gen = self.generation_w
         con = self.consumption_w
         if gen is None or con is None:
@@ -247,47 +285,54 @@ class PowerLog:
 
 
 class SimLog:
-    def __init__(self, recorders: dict, battery_capacity_ws: float) -> None:
-        if recorders.get("scState") is None:
-            raise ValueError("recorders['scState'] is required")
+    def __init__(self, recorders: SimulationRecorders, battery_capacity_ws: float) -> None:
         self._recorders = recorders
         self._battery_capacity_ws = battery_capacity_ws
 
+    def validate(self) -> None:
+        """Validate completed recording before reporting or plotting it."""
+        r = self._recorders
+        t = self.t
+        if not len(t):
+            raise ValueError("simulation produced no samples")
+        _check_recorder(r.scState, t, "sigma_BN", "omega_BN_B", "r_BN_N")
+        _check_recorder(r.environment.mag, t, "magField_N")
+        _check_recorder(r.environment.eclipse, t, "shadowFactor")
+        _check_recorder(r.power.battery, t, "storageLevel")
+        for rec in (*r.power.panels.values(), *r.power.sinks.values()):
+            _check_recorder(rec, t, "netPower")
+        _check_recorder(r.pmac.pmTorque, t, "torqueRequestBody")
+        if r.pmac.rodTorques.keys() != r.pmac.hysteresis.keys():
+            raise ValueError("rod torque and hysteresis recorder tags differ")
+        for rec in r.pmac.rodTorques.values():
+            _check_recorder(rec, t, "torqueRequestBody")
+        for rec in r.pmac.hysteresis.values():
+            _check_recorder(rec, t, "H", "M")
+
     @property
     def t(self) -> np.ndarray:
-        times = _times_s(self._recorders["scState"])
-        if times is None:
-            raise ValueError("recorders['scState'] has no times()")
-        return times
+        return _times_s(self._recorders.scState)
 
     @property
     def attitude(self) -> AttitudeLog:
-        return AttitudeLog(self._recorders["scState"])
+        return AttitudeLog(self._recorders.scState)
 
     @property
     def mag(self) -> MagLog:
-        return MagLog(self._recorders.get("mag"))
+        return MagLog(self._recorders.environment.mag)
 
     @property
     def power(self) -> PowerLog:
-        return PowerLog(
-            self._recorders.get("battery"),
-            self._recorders.get("panels") or {},
-            self._recorders.get("sinks") or {},
-            self._recorders.get("eclipse"),
-            self._battery_capacity_ws,
-        )
+        r = self._recorders
+        return PowerLog(r.power.battery, r.power.panels, r.power.sinks,
+                        r.environment.eclipse, self._battery_capacity_ws)
 
     @property
     def rods(self) -> dict[str, RodLog]:
-        torques: dict[str, Recorder] = self._recorders.get("rodTorques") or {}
-        hyst: dict[str, Recorder] = self._recorders.get("hysteresis") or {}
-        tags = set(torques) | set(hyst)
-        return {
-            tag: RodLog(tag, torques.get(tag), hyst.get(tag))
-            for tag in sorted(tags)
-        }
+        r = self._recorders.pmac
+        return {tag: RodLog(tag, r.rodTorques[tag], r.hysteresis[tag])
+                for tag in sorted(r.rodTorques)}
 
     @property
-    def perm_magnet_torque(self) -> np.ndarray | None:
-        return _rec_field(self._recorders.get("pmTorque"), "torqueRequestBody")
+    def perm_magnet_torque(self) -> np.ndarray:
+        return _rec_field(self._recorders.pmac.pmTorque, "torqueRequestBody")

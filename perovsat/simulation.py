@@ -6,7 +6,6 @@ hardware lives in ``config.py``; this module only orchestrates Basilisk.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
@@ -15,44 +14,39 @@ from Basilisk.utilities import SimulationBaseClass, macros, vizSupport
 
 from perovsat import config
 from perovsat._bsk import attach_recorder
-from perovsat.environment import setup_environment
-from perovsat.log import SimLog
-from perovsat.pmac import setup_pmac
-from perovsat.power import setup_power
+from perovsat.environment import Environment, setup_environment
+from perovsat.log import SimLog, SimulationRecorders
+from perovsat.pmac import PmacStack, setup_pmac
+from perovsat.power import PowerStack, setup_power
+from perovsat.run_config import RunConfig
 
 _TASK = "simTask"
 
 
-@dataclass
-class RunConfig:
-    """Knobs for this execution. The satellite itself is ``config.py``."""
-
-    name: str = "unnamed"
-    duration_s: float = 3600.0
-    timestep_s: float = 0.5
-    record_period_s: float = 1.0
-    omega_init: list | None = None
-    sigma_init: list | None = None
-    soc_init: float | None = None
-    epoch_utc: str | None = None
-    output_dir: str | Path | None = None
-    vizard: bool = False
 
 
 class PerovSatSimulation:
+    """Own the Basilisk wrappers for exactly one execution."""
+
     def __init__(self, cfg: RunConfig):
         self.config = cfg
         self.output_dir = Path(cfg.output_dir) if cfg.output_dir else Path("output")
-        self.scSim = None
-        self.scObject = None
-        self.integrator = None
-        self.env = None
-        self.pmac = None
-        self.power = None
+        self._started = False
+        self.scSim: SimulationBaseClass.SimBaseClass | None = None
+        self.scObject: spacecraft.Spacecraft | None = None
+        self.integrator: svIntegrators.svIntegratorRKF45 | None = None
+        self.env: Environment | None = None
+        self.pmac: PmacStack | None = None
+        self.power: PowerStack | None = None
         self.viz = None
         self.log: SimLog | None = None
 
     def run(self) -> SimLog:
+        if self._started:
+            raise RuntimeError("simulation instances support one run; create a new instance")
+        self.config.validate()
+        config.validate_vehicle()
+        self._started = True
         self._build()
         print(
             f"\nRunning {self.config.name} for {self.config.duration_s:.1f} s "
@@ -62,6 +56,8 @@ class PerovSatSimulation:
         self.scSim.ConfigureStopTime(macros.sec2nano(self.config.duration_s))
         self.scSim.ExecuteSimulation()
         print("Simulation complete.\n")
+        assert self.log is not None
+        self.log.validate()
         self._write_summary()
         return self.log
 
@@ -98,14 +94,12 @@ class PerovSatSimulation:
         if cfg.vizard:
             self._setup_vizard()
 
-        recorders = {
-            "scState": attach_recorder(
-                self.scSim, _TASK, self.scObject.scStateOutMsg, rec_ns
-            ),
-            **self.env.recorders,
-            **self.pmac.recorders,
-            **self.power.recorders,
-        }
+        recorders = SimulationRecorders(
+            scState=attach_recorder(self.scSim, _TASK, self.scObject.scStateOutMsg, rec_ns),
+            environment=self.env.recorders,
+            pmac=self.pmac.recorders,
+            power=self.power.recorders,
+        )
         self.log = SimLog(recorders, self.power.capacity_ws)
 
     def _setup_spacecraft(self):

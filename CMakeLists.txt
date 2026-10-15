@@ -45,14 +45,14 @@ bsk_add_swig_module(
   OUTPUT_DIR "${PLUGIN_PKG_DIR}"
 )
 
-# hyteresisRods — C++ StateEffector implementing Flatley–Henretty hysteresis
+# hysteresisRods — C++ StateEffector implementing Flatley–Henretty hysteresis
 # rod model for passive magnetic attitude detumbling.
 bsk_add_swig_module(
-  TARGET hyteresisRods
-  INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/ExternalModules/hyteresisRods/hyteresisRods.i"
-  SOURCES   "${CMAKE_CURRENT_SOURCE_DIR}/ExternalModules/hyteresisRods/hyteresisRods.cpp"
+  TARGET hysteresisRods
+  INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/ExternalModules/hysteresisRods/hysteresisRods.i"
+  SOURCES   "${CMAKE_CURRENT_SOURCE_DIR}/ExternalModules/hysteresisRods/hysteresisRods.cpp"
   INCLUDE_DIRS
-    "${CMAKE_CURRENT_SOURCE_DIR}/ExternalModules/hyteresisRods"
+    "${CMAKE_CURRENT_SOURCE_DIR}/ExternalModules/hysteresisRods"
     "${CMAKE_CURRENT_SOURCE_DIR}/messages"
   OUTPUT_DIR "${PLUGIN_PKG_DIR}"
 )

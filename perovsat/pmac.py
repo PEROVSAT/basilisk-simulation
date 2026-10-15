@@ -7,12 +7,13 @@ from math import pi
 
 import numpy as np
 
+from perovsat.log import PmacRecorders
 from perovsat import config
 from perovsat._bsk import attach_recorder
 
 try:
     import perovsat_plugins.messaging  # noqa: F401
-    from perovsat_plugins.hyteresisRods import HysteresisRods
+    from perovsat_plugins.hysteresisRods import HysteresisRods
     from perovsat_plugins.permanentMagnet import PermanentMagnet
 except ImportError as exc:
     raise ImportError(f"Compiled plugins not found: {exc}") from exc
@@ -20,9 +21,9 @@ except ImportError as exc:
 
 @dataclass
 class PmacStack:
-    magnet: object
-    rods: dict
-    recorders: dict
+    magnet: PermanentMagnet
+    rods: dict[str, HysteresisRods]
+    recorders: PmacRecorders
 
 
 def setup_pmac(scSim, scObject, mag_module, task_name, record_period_ns) -> PmacStack:
@@ -67,11 +68,9 @@ def setup_pmac(scSim, scObject, mag_module, task_name, record_period_ns) -> Pmac
     return PmacStack(
         magnet=magnet,
         rods=rods,
-        recorders={
-            "pmTorque": attach_recorder(
-                scSim, task_name, magnet.cmdTorqueOutMsg, record_period_ns
-            ),
-            "rodTorques": torque_recs,
-            "hysteresis": hyst_recs,
-        },
+        recorders=PmacRecorders(
+            pmTorque=attach_recorder(scSim, task_name, magnet.cmdTorqueOutMsg, record_period_ns),
+            rodTorques=torque_recs,
+            hysteresis=hyst_recs,
+        ),
     )

@@ -8,22 +8,24 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from Basilisk.simulation import eclipse, magneticFieldWMM
+from Basilisk.simulation import eclipse, magneticFieldWMM, spiceInterface
+from Basilisk.architecture import messaging
 from Basilisk.utilities import macros, orbitalMotion, simIncludeGravBody
 from Basilisk.utilities.supportDataTools.dataFetcher import DataFile, get_path
 
+from perovsat.log import EnvironmentRecorders
 from perovsat import config
 from perovsat._bsk import attach_recorder
 
 
 @dataclass
 class Environment:
-    grav_factory: object
-    spice: object
-    mag: object
-    sun_state_msg: object
-    eclipse: object
-    recorders: dict
+    grav_factory: simIncludeGravBody.gravBodyFactory
+    spice: spiceInterface.SpiceInterface
+    mag: magneticFieldWMM.MagneticFieldWMM
+    sun_state_msg: messaging.SpicePlanetStateMsg
+    eclipse: eclipse.Eclipse
+    recorders: EnvironmentRecorders
 
     @property
     def eclipse_out_msg(self):
@@ -69,12 +71,10 @@ def setup_environment(scSim, scObject, task_name, epoch_utc, record_period_ns) -
         mag=mag,
         sun_state_msg=sun_state_msg,
         eclipse=eclipse_model,
-        recorders={
-            "mag": attach_recorder(scSim, task_name, mag.envOutMsgs[0], record_period_ns),
-            "eclipse": attach_recorder(
-                scSim, task_name, eclipse_model.eclipseOutMsgs[0], record_period_ns
-            ),
-        },
+        recorders=EnvironmentRecorders(
+            mag=attach_recorder(scSim, task_name, mag.envOutMsgs[0], record_period_ns),
+            eclipse=attach_recorder(scSim, task_name, eclipse_model.eclipseOutMsgs[0], record_period_ns),
+        ),
     )
 
 
