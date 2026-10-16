@@ -15,6 +15,7 @@ magnet and hysteresis rods.
 | [Architecture](docs/architecture.md) | Code map, data flow, units, assumptions |
 | [Development](docs/development.md) | Experiments, hardware changes, builds, validation |
 | [Power](docs/power.md) | Panels, loads, battery, recorded power |
+| [Real time](docs/realtime.md) | Wall-clock pacing, timing diagnostics, live Vizard |
 | [Rod model](ExternalModules/hysteresisRods/README.md) | Hysteresis equations and parameters |
 
 ## Quick start
