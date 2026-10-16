@@ -40,6 +40,8 @@ class PerovSatSimulation:
         self.power: PowerStack | None = None
         self.viz = None
         self.log: SimLog | None = None
+        self.pacer = None
+        self.status = "not started"
 
     def run(self) -> SimLog:
         if self._started:
@@ -54,7 +56,16 @@ class PerovSatSimulation:
         )
         self.scSim.InitializeSimulation()
         self.scSim.ConfigureStopTime(macros.sec2nano(self.config.duration_s))
-        self.scSim.ExecuteSimulation()
+        self.status = "running"
+        try:
+            self.scSim.ExecuteSimulation()
+        except (Exception, KeyboardInterrupt):
+            self.status = "interrupted or failed"
+            self._write_summary()
+            if self.pacer is not None and self.pacer.failure:
+                raise RuntimeError(self.pacer.failure) from None
+            raise
+        self.status = "complete"
         print("Simulation complete.\n")
         assert self.log is not None
         self.log.validate()
@@ -67,7 +78,7 @@ class PerovSatSimulation:
         print(f"\n{'=' * 60}\nPEROVSAT  {cfg.name}\nOutput: {self.output_dir}\n{'=' * 60}\n")
 
         self.scSim = SimulationBaseClass.SimBaseClass()
-        self.scSim.SetProgressBar(True)
+        self.scSim.SetProgressBar(not cfg.realtime)
         process = self.scSim.CreateNewProcess("simProcess")
         process.addTask(self.scSim.CreateNewTask(_TASK, macros.sec2nano(cfg.timestep_s)))
         rec_ns = macros.sec2nano(cfg.record_period_s)
@@ -91,7 +102,7 @@ class PerovSatSimulation:
             rec_ns,
             soc=cfg.soc_init,
         )
-        if cfg.vizard:
+        if cfg.vizard or cfg.vizard_live:
             self._setup_vizard()
 
         recorders = SimulationRecorders(
@@ -101,6 +112,12 @@ class PerovSatSimulation:
             power=self.power.recorders,
         )
         self.log = SimLog(recorders, self.power.capacity_ws)
+        if cfg.realtime:
+            from perovsat.realtime import RealtimePacer
+
+            self.pacer = RealtimePacer(cfg)
+            # Lower priority runs after physics, output, and recorders (priority 0).
+            self.scSim.AddModelToTask(_TASK, self.pacer, -100)
 
     def _setup_spacecraft(self):
         cfg = self.config
@@ -121,27 +138,37 @@ class PerovSatSimulation:
 
     def _setup_vizard(self):
         if not vizSupport.vizFound:
+            if self.config.vizard_live:
+                raise RuntimeError("Live Vizard requested but Vizard support is unavailable")
             print("Vizard support not found; skipping Unity visualization output.")
             return
         # Basilisk appends ``_UnityViz.bin`` to this path.
         save_file = str((self.output_dir / self.config.name).resolve())
         self.viz = vizSupport.enableUnityVisualization(
-            self.scSim, _TASK, self.scObject, saveFile=save_file,
+            self.scSim, _TASK, self.scObject,
+            saveFile=save_file if self.config.vizard else None,
+            liveStream=self.config.vizard_live,
         )
-        print(f"Vizard: {save_file}_UnityViz.bin")
+        if self.config.vizard:
+            print(f"Vizard: {save_file}_UnityViz.bin")
 
     def _write_summary(self):
         path = self.output_dir / "summary.txt"
         cfg = self.config
         lines = [
             f"Experiment: {cfg.name}",
+            f"Status: {self.status}",
             f"Run at: {datetime.now().isoformat()}",
             "=" * 60,
             f"Duration: {cfg.duration_s:.1f} s",
             f"Timestep: {cfg.timestep_s:.3f} s",
             f"Record period: {cfg.record_period_s:.3f} s",
             f"Vizard: {'on' if cfg.vizard else 'off'}",
+            f"Vizard live: {'on' if cfg.vizard_live else 'off'}",
+            f"Real-time: {'on' if cfg.realtime else 'off'}",
         ]
+        if self.pacer is not None:
+            lines.extend(self.pacer.summary())
         if self.log is not None and self.log.power.soc is not None and len(self.log.power.soc):
             lines.append(f"Final SOC: {self.log.power.soc[-1] * 100:.1f}%")
         path.write_text("\n".join(lines) + "\n")

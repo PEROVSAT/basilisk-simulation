@@ -42,6 +42,9 @@ class ConfigurationTests(unittest.TestCase):
             {"duration_s": 0}, {"timestep_s": -1},
             {"record_period_s": float("nan")}, {"soc_init": 1.1},
             {"sigma_init": [0, 0]}, {"omega_init": [0, float("inf"), 0]},
+            {"realtime_factor": 0}, {"realtime_factor": float("inf")},
+            {"max_lag_s": -1}, {"max_lag_s": float("nan")},
+            {"overrun_policy": "skip"},
         ):
             with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
                 RunConfig(**kwargs)

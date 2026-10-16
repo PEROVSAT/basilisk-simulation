@@ -8,6 +8,7 @@
 # Adding an experiment does not require Makefile changes.
 
 IMAGE               ?= perovsat-bsk
+DOCKER_ARGS         ?=
 CONTAINER_WORKSPACE ?= /workspace/basilisk-simulation
 ROOT                := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 VENV                := .venv
@@ -20,7 +21,7 @@ TTY_FLAGS := $(shell [ -t 0 ] && echo -it)
 # Repo root covers both experiments.* and perovsat.* — no sys.path hacks in Python.
 PYTHONPATH_VAL := $(CONTAINER_WORKSPACE)
 
-DOCKER_RUN = docker run --rm $(TTY_FLAGS) \
+DOCKER_RUN = docker run --rm $(TTY_FLAGS) $(DOCKER_ARGS) \
 	-v "$(ROOT):$(CONTAINER_WORKSPACE)" \
 	-w "$(CONTAINER_WORKSPACE)" \
 	-e "PATH=$(CONTAINER_WORKSPACE)/$(VENV)/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \

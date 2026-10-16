@@ -24,13 +24,21 @@ class RunConfig:
     epoch_utc: str | None = None
     output_dir: str | Path | None = None
     vizard: bool = False
+    realtime: bool = False
+    realtime_factor: float = 1.0
+    max_lag_s: float = 0.1
+    overrun_policy: str = "warn"
+    vizard_live: bool = False
 
     def __post_init__(self) -> None:
         self.validate()
 
     def validate(self) -> None:
-        for name in ("duration_s", "timestep_s", "record_period_s"):
+        for name in ("duration_s", "timestep_s", "record_period_s",
+                     "realtime_factor", "max_lag_s"):
             positive(name, getattr(self, name))
+        if self.overrun_policy not in ("warn", "stop"):
+            raise ValueError("overrun_policy must be 'warn' or 'stop'")
         if self.soc_init is not None:
             fraction("initial SOC", self.soc_init)
         for name in ("omega_init", "sigma_init"):
