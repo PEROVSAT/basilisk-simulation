@@ -149,6 +149,10 @@ class PerovSatSimulation:
             saveFile=save_file if self.config.vizard else None,
             liveStream=self.config.vizard_live,
         )
+        if self.config.vizard_live:
+            # Basilisk 2.10.2 connects; Vizard owns the listening socket.
+            self.viz.reqComAddress = self.config.vizard_address
+            print(f"Vizard destination: tcp://{self.config.vizard_address}:5556")
         if self.config.vizard:
             print(f"Vizard: {save_file}_UnityViz.bin")
 

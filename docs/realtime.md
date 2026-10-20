@@ -27,12 +27,33 @@ The adaptive RKF45 integrator and existing physics task period are unchanged.
 Timing statistics use constant memory; existing physics recorders still grow
 with the number of recorded samples. Choose recording periods for the run length.
 
-For live Vizard, publish its container port and connect in Direct Communication /
-Live Streaming mode to `tcp://localhost:5556`:
+For Basilisk 2.10.2, **Vizard listens and Basilisk connects**. Do not publish Docker
+port 5556: that can occupy the port Vizard needs. In Vizard 2.4 select **Receive &
+Reply** and **Live Display**, enter a local listening address, and click Start
+Visualization while Basilisk is waiting.
+
+On a native Linux computer with both Docker and Vizard, use host networking and
+enter `tcp://127.0.0.1:5556` in Vizard:
 
 ```bash
-make run SCRIPT=experiments/realtime/run.py ARGS='--live' DOCKER_ARGS='-p 5556:5556'
+make live
 ```
+
+For Vizard on another computer, set `--viz-address` to that computer's reachable
+IP address (no protocol prefix or port). In Vizard, use `tcp://<that-IP>:5556`.
+TCP 5556 must be reachable on the **Vizard computer**. For Windows Vizard with
+Docker running inside WSL, the Windows host address is normally the default
+gateway shown by `ip route show default` in WSL; use that address in both places.
+It may change when WSL restarts. Example:
+
+```bash
+make live VIZARD_ADDRESS=172.26.192.1
+```
+
+The corresponding `RunConfig` field is `vizard_address`, defaulting to
+`127.0.0.1`. Loopback inside an ordinary container refers to the container itself.
+`make live` supplies `--network host` at container startup; no Dockerfile rebuild
+is required. Under WSL this shares the Linux network, not Windows loopback.
 
 `vizard_live=True` enables the live connection independently of `vizard=True`,
 which continues to save a playback file. Both may be enabled together. Live mode
