@@ -29,6 +29,7 @@ class RunConfig:
     max_lag_s: float = 0.1
     overrun_policy: str = "warn"
     vizard_live: bool = False
+    vizard_address: str = "127.0.0.1"
 
     def __post_init__(self) -> None:
         self.validate()

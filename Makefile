@@ -9,6 +9,7 @@
 
 IMAGE               ?= perovsat-bsk
 DOCKER_ARGS         ?=
+VIZARD_ADDRESS      ?= 127.0.0.1
 CONTAINER_WORKSPACE ?= /workspace/basilisk-simulation
 ROOT                := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 VENV                := .venv
@@ -34,13 +35,14 @@ PLUGIN_SRCS += $(shell find ExternalModules messages python -type f 2>/dev/null)
 
 .DEFAULT_GOAL := help
 
-.PHONY: help docker-check require-image image plugins plugins-force run shell smoke test clean image-clean
+.PHONY: help docker-check require-image image plugins plugins-force run live shell smoke test clean image-clean
 
 help:
 	@echo "PEROVSAT Basilisk"
 	@echo
 	@echo "  make shell                              Drop into a container shell (venv on PATH)"
 	@echo "  make run SCRIPT=experiments/foo/run.py  Run a Python script in the container"
+	@echo "  make live VIZARD_ADDRESS=127.0.0.1       Live Vizard with Docker host networking"
 	@echo "  make plugins                            Compile C++ plugins if sources changed"
 	@echo "  make smoke                              Import compiled plugins"
 	@echo "  make image                              Rebuild the Docker toolchain image"
@@ -87,6 +89,11 @@ ifndef SCRIPT
 	$(error SCRIPT= is required, e.g. make run SCRIPT=experiments/detumble/run.py)
 endif
 	$(DOCKER_RUN) python $(SCRIPT) $(ARGS)
+
+# Native Linux: Vizard can listen on localhost. With WSL + Windows Vizard,
+# VIZARD_ADDRESS must be the reachable Windows host address instead.
+live:
+	$(MAKE) run SCRIPT=experiments/realtime/run.py DOCKER_ARGS="$(DOCKER_ARGS) --network host" ARGS="--live --viz-address $(VIZARD_ADDRESS) $(ARGS)"
 
 shell: plugins
 	docker run --rm -it \

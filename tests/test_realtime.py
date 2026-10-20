@@ -19,12 +19,15 @@ class RealtimeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             for save, live in ((True, False), (False, True), (True, True)):
                 sim = PerovSatSimulation(RunConfig(
-                    output_dir=directory, vizard=save, vizard_live=live))
+                    output_dir=directory, vizard=save, vizard_live=live,
+                    vizard_address="192.0.2.10"))
                 with patch.object(vizSupport, "vizFound", True), patch.object(
                         vizSupport, "enableUnityVisualization") as enable:
                     sim._setup_vizard()
                 self.assertEqual(enable.call_args.kwargs["liveStream"], live)
                 self.assertEqual(enable.call_args.kwargs["saveFile"] is not None, save)
+                if live:
+                    self.assertEqual(enable.return_value.reqComAddress, "192.0.2.10")
             with patch.object(vizSupport, "vizFound", False):
                 with self.assertRaisesRegex(RuntimeError, "unavailable"):
                     sim._setup_vizard()
