@@ -112,6 +112,15 @@ produces attitude, magnetic field, rod torque and hysteresis plots. The detumble
 script also requests Vizard output: when supported, Basilisk writes a file ending
 in `_UnityViz.bin`. Python plots do not require opening Vizard.
 
+## Run live Vizard
+
+On native Linux with Vizard on the same host, run `make live`. Once the terminal
+prints `Waiting for Vizard listener`, enter `tcp://127.0.0.1:5556` in Vizard,
+select **Receive & Reply** and **Live Display**, and click **Start Visualization**.
+The example runs for 60 simulated seconds at 1x speed. The listener wait times out
+after 120 seconds; use `ARGS='--viz-timeout 180'` to allow more startup time.
+For Windows/WSL and remote viewer addresses, see [Real time](realtime.md).
+
 ## Troubleshooting
 
 | Symptom | What to check |
@@ -126,6 +135,7 @@ in `_UnityViz.bin`. Python plots do not require opening Vizard.
 | Configuration raises `ValueError` | Correct the named parameter and check units. SOC and duty are fractions, not percentages. |
 | Recorder validation fails | Check scheduling, recorder periods, message wiring and payload fields; do not pad arrays to hide the mismatch. |
 | Second call to `run()` fails | Create a new `PerovSatSimulation` instance. |
+| Vizard listener timeout or socket error | Follow the startup sequence in [Real time](realtime.md); remove spaces from the address and do not publish Docker port 5556. |
 
 When asking a teammate for help, include the command, full traceback/build error,
 Git revision and local changes, experiment settings, and whether `make smoke`

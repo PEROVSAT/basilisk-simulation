@@ -19,6 +19,7 @@ from perovsat.log import SimLog, SimulationRecorders
 from perovsat.pmac import PmacStack, setup_pmac
 from perovsat.power import PowerStack, setup_power
 from perovsat.run_config import RunConfig
+from perovsat.vizard import wait_for_vizard
 
 _TASK = "simTask"
 
@@ -54,11 +55,17 @@ class PerovSatSimulation:
             f"\nRunning {self.config.name} for {self.config.duration_s:.1f} s "
             f"(dt={self.config.timestep_s} s)..."
         )
-        self.scSim.InitializeSimulation()
-        self.scSim.ConfigureStopTime(macros.sec2nano(self.config.duration_s))
-        self.status = "running"
+        self.status = "initializing"
         try:
+            if self.config.vizard_live:
+                self.status = "waiting for Vizard"
+                wait_for_vizard(self.config.vizard_address, self.config.vizard_timeout_s)
+            self.scSim.InitializeSimulation()
+            self.scSim.ConfigureStopTime(macros.sec2nano(self.config.duration_s))
+            self.status = "running"
             self.scSim.ExecuteSimulation()
+            assert self.log is not None
+            self.log.validate()
         except (Exception, KeyboardInterrupt):
             self.status = "interrupted or failed"
             self._write_summary()
@@ -67,8 +74,6 @@ class PerovSatSimulation:
             raise
         self.status = "complete"
         print("Simulation complete.\n")
-        assert self.log is not None
-        self.log.validate()
         self._write_summary()
         return self.log
 
@@ -173,6 +178,11 @@ class PerovSatSimulation:
         ]
         if self.pacer is not None:
             lines.extend(self.pacer.summary())
+        if cfg.vizard_live:
+            lines.extend([
+                f"Vizard destination: tcp://{cfg.vizard_address}:5556",
+                f"Vizard listener timeout: {cfg.vizard_timeout_s:g} s",
+            ])
         if self.log is not None and self.log.power.soc is not None and len(self.log.power.soc):
             lines.append(f"Final SOC: {self.log.power.soc[-1] * 100:.1f}%")
         path.write_text("\n".join(lines) + "\n")

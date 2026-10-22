@@ -8,6 +8,8 @@
 | --- | --- |
 | [experiments/power/run.py](../experiments/power/run.py) | A complete experiment selecting settings and plotting output |
 | [perovsat/run_config.py](../perovsat/run_config.py) | Execution settings and validation |
+| [perovsat/realtime.py](../perovsat/realtime.py) | Native clock pacing and timing statistics |
+| [perovsat/vizard.py](../perovsat/vizard.py) | TCP listener readiness before the native Vizard handshake |
 | [perovsat/config.py](../perovsat/config.py) | Hardware, initial defaults, orbit and material values |
 | [perovsat/simulation.py](../perovsat/simulation.py) | Build, execute, validate recordings, write summary |
 | [perovsat/environment.py](../perovsat/environment.py) | Gravity, initial orbit, SPICE, WMM and eclipses |
@@ -38,6 +40,14 @@ and task, initializes it, executes to the stop time, validates recordings, and
 writes `summary.txt`. The instance retains references to the integrator and
 subsystem wrappers: Basilisk holds C++ pointers to those objects, so dropping
 their Python owners can invalidate the pointers.
+
+Live runs finish building models, then probe the configured Vizard listener on
+TCP 5556 before calling `InitializeSimulation()`. Each probe socket is closed;
+Basilisk establishes its own ZeroMQ connection. This avoids starting the native
+connection while Vizard is absent. Listener readiness is not a protocol or rendering
+check. Initialization and connection setup are outside the paced interval; the
+real-time model runs last on each task tick. Readiness timeouts and interruptions
+write a failed-run summary. Native handshake and stream calls can still block.
 
 The task is assembled in this order: spacecraft; SPICE, WMM and eclipse;
 permanent magnet and rods; panels and loads; battery. Recorders are added as

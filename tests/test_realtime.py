@@ -13,6 +13,30 @@ import numpy as np
 
 @unittest.skipUnless(importlib.util.find_spec("Basilisk"), "Basilisk is not installed")
 class RealtimeTests(unittest.TestCase):
+    def test_live_wait_precedes_initialization_and_handles_failure(self):
+        from perovsat.simulation import PerovSatSimulation, RunConfig
+        from Basilisk.utilities import SimulationBaseClass
+
+        with tempfile.TemporaryDirectory() as directory:
+            for failure in (TimeoutError('listener unavailable'), KeyboardInterrupt()):
+                sim = PerovSatSimulation(RunConfig(output_dir=directory, vizard_live=True))
+                with patch.object(sim, '_setup_vizard'), \
+                        patch('perovsat.simulation.wait_for_vizard', side_effect=failure) as wait, \
+                        patch.object(SimulationBaseClass.SimBaseClass, 'InitializeSimulation') as init:
+                    with self.assertRaises(type(failure)):
+                        sim.run()
+                wait.assert_called_once_with('127.0.0.1', 120)
+                init.assert_not_called()
+                self.assertIn('interrupted or failed', Path(directory, 'summary.txt').read_text())
+
+    def test_nonlive_does_not_wait(self):
+        from perovsat.simulation import PerovSatSimulation, RunConfig
+
+        with tempfile.TemporaryDirectory() as directory, \
+                patch('perovsat.simulation.wait_for_vizard') as wait:
+            PerovSatSimulation(RunConfig(output_dir=directory, duration_s=.5)).run()
+            wait.assert_not_called()
+
     def test_vizard_modes(self):
         from perovsat.simulation import PerovSatSimulation, RunConfig, vizSupport
 

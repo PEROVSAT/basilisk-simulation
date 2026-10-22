@@ -42,6 +42,13 @@ make run SCRIPT=experiments/my_study/run.py
 | `epoch_utc` | `None` uses configured SPICE epoch string |
 | `output_dir` | `None` writes to `output/` relative to the working directory |
 | `vizard` | `False`; request visualization output if supported |
+| `realtime` | `False`; enable wall-clock pacing |
+| `realtime_factor` | `1.0`; simulated seconds per wall second |
+| `max_lag_s` | `0.1`; wall-clock lag limit |
+| `overrun_policy` | `"warn"`; warn once and count late ticks, or `"stop"` |
+| `vizard_live` | `False`; stream to a Vizard listener |
+| `vizard_address` | `"127.0.0.1"`; IPv4 address or hostname, without spaces, protocol, or port |
+| `vizard_timeout_s` | `120.0`; positive finite timeout for TCP listener readiness |
 
 Initial vectors accept three entries or a 3×1 nested list. Follow the configured
 epoch format, for example `2026 JUN 21 12:00:00.0 (UTC)`. `RunConfig` can also
@@ -76,6 +83,7 @@ Run these in the host POSIX shell at the repository root:
 | `make smoke` | Build as needed and check both plugin imports |
 | `make test` | Build as needed and run all regression tests |
 | `make run SCRIPT=...` | Execute an experiment with the environment configured |
+| `make live VIZARD_ADDRESS=...` | Run the live example with host networking and listener readiness wait |
 | `make shell` | Open a container shell; `exit` returns to the host |
 | `make image` | Rebuild after Dockerfile, Basilisk or toolchain dependency changes |
 | `make clean` | Remove local environment/build artifacts; the next run rebuilds them |
@@ -116,6 +124,12 @@ The integration test skips there. Use `make test` to exercise compiled modules
 and the short simulation in the container. For dynamics changes, also compare
 representative outputs before/after and repeat at a finer task period. Passing
 an import check or two-second run does not establish multi-day damping accuracy.
+
+`tests/test_vizard.py` checks listener retries, timeout, DNS errors and interrupts
+without Basilisk. Integration tests verify readiness failure prevents native
+initialization and writes a failed-run summary. These tests do not launch the
+Vizard GUI; follow [the live test procedure](realtime.md#live-test-procedure)
+when changing networking or handshake behavior.
 
 When sharing results, record the Git revision, local vehicle changes,
 `RunConfig`, command, output directory and validation performed. `summary.txt`

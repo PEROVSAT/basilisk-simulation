@@ -45,6 +45,9 @@ class ConfigurationTests(unittest.TestCase):
             {"realtime_factor": 0}, {"realtime_factor": float("inf")},
             {"max_lag_s": -1}, {"max_lag_s": float("nan")},
             {"overrun_policy": "skip"},
+            {"vizard_timeout_s": 0}, {"vizard_timeout_s": float("inf")},
+            {"vizard_address": ""}, {"vizard_address": " tcp://localhost:5556"},
+            {"vizard_address": "localhost:5556"}, {"vizard_address": None},
         ):
             with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
                 RunConfig(**kwargs)

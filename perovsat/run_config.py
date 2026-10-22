@@ -30,14 +30,18 @@ class RunConfig:
     overrun_policy: str = "warn"
     vizard_live: bool = False
     vizard_address: str = "127.0.0.1"
+    vizard_timeout_s: float = 120.0
 
     def __post_init__(self) -> None:
         self.validate()
 
     def validate(self) -> None:
         for name in ("duration_s", "timestep_s", "record_period_s",
-                     "realtime_factor", "max_lag_s"):
+                     "realtime_factor", "max_lag_s", "vizard_timeout_s"):
             positive(name, getattr(self, name))
+        if (not isinstance(self.vizard_address, str) or not self.vizard_address
+                or any(c.isspace() or c in ":/" for c in self.vizard_address)):
+            raise ValueError("vizard_address must be an IPv4 address or hostname without spaces, protocol, or port")
         if self.overrun_policy not in ("warn", "stop"):
             raise ValueError("overrun_policy must be 'warn' or 'stop'")
         if self.soc_init is not None:

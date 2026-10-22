@@ -40,6 +40,11 @@ make run SCRIPT=experiments/detumble/run.py   # 22 simulated days
 make shell                                  # interactive container
 ```
 
+For live Vizard on the same native Linux host, run `make live`. Wait for
+`Waiting for Vizard listener`, then select **Receive & Reply** and **Live Display**
+in Vizard at `tcp://127.0.0.1:5556` and click **Start Visualization**.
+For Windows/WSL or another viewer host, follow [Real time](docs/realtime.md).
+
 Plots and summaries go to each experiment's `output/` directory. Vehicle values
 live in [config.py](perovsat/config.py); execution settings live in
 [run_config.py](perovsat/run_config.py).
