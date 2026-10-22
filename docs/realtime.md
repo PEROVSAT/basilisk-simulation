@@ -1,5 +1,9 @@
 # Real-time execution
 
+For a fixed-duration three-day mission with incremental telemetry and graceful
+stop handling, use [Missions](mission.md). The commands below remain short
+real-time demonstrations with in-memory recordings.
+
 Run from WSL/POSIX with Docker running:
 
 ```bash

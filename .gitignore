@@ -1,4 +1,5 @@
 _VizFiles
+experiments/mission/output/
 .build/
 
 # Byte-compiled / optimized / DLL files

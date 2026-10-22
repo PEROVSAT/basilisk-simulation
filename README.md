@@ -16,6 +16,7 @@ magnet and hysteresis rods.
 | [Development](docs/development.md) | Experiments, hardware changes, builds, validation |
 | [Power](docs/power.md) | Panels, loads, battery, recorded power |
 | [Real time](docs/realtime.md) | Wall-clock pacing, timing diagnostics, live Vizard |
+| [Missions](docs/mission.md) | Three-day runs, segmented telemetry, stopping and validation |
 | [Rod model](ExternalModules/hysteresisRods/README.md) | Hysteresis equations and parameters |
 
 ## Quick start
@@ -39,6 +40,10 @@ make run SCRIPT=experiments/power/run.py      # 3 simulated days
 make run SCRIPT=experiments/detumble/run.py   # 22 simulated days
 make shell                                  # interactive container
 ```
+
+For a fixed-duration mission with incremental telemetry saving, use `make mission`
+(three days at 1x) or `make mission ARGS='--unpaced'` for the same duration as fast
+as possible. See [Missions](docs/mission.md) for output and live-viewer options.
 
 For live Vizard on the same native Linux host, run `make live`. Wait for
 `Waiting for Vizard listener`, then select **Receive & Reply** and **Live Display**

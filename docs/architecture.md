@@ -2,6 +2,12 @@
 
 [Documentation index](../README.md)
 
+For long fixed-duration execution, [MissionRunner](../perovsat/mission.py) reuses
+the existing vehicle builder and retains its model owners. It advances absolute
+stop times without reinitializing models or clocks, saves validated recorder
+segments, then clears those buffers. Existing experiments retain their full-memory
+`SimLog` interface. See [Missions](mission.md) for the persisted telemetry schema.
+
 ## Read the code in this order
 
 | File or directory | Responsibility |

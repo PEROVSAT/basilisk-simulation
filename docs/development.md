@@ -2,6 +2,12 @@
 
 [Documentation index](../README.md)
 
+Mission settings extend `RunConfig` in `perovsat/mission_config.py`. Run `make test`
+after changes to timing, recorders or lifecycle: mission tests cover segmented
+equivalence, partial segments, file protection, failure handling and pacing.
+Use `make mission ARGS='--unpaced'` for full-duration validation and the
+[mission analyzer](mission.md#validate-and-read-telemetry) to verify saved data.
+
 ## Where to make a change
 
 | Change | Start here |
