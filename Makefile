@@ -8,6 +8,8 @@
 # Adding an experiment does not require Makefile changes.
 
 IMAGE               ?= perovsat-bsk
+DOCKER_ARGS         ?=
+VIZARD_ADDRESS      ?= 127.0.0.1
 CONTAINER_WORKSPACE ?= /workspace/basilisk-simulation
 ROOT                := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 VENV                := .venv
@@ -20,7 +22,7 @@ TTY_FLAGS := $(shell [ -t 0 ] && echo -it)
 # Repo root covers both experiments.* and perovsat.* — no sys.path hacks in Python.
 PYTHONPATH_VAL := $(CONTAINER_WORKSPACE)
 
-DOCKER_RUN = docker run --rm $(TTY_FLAGS) \
+DOCKER_RUN = docker run --rm $(TTY_FLAGS) $(DOCKER_ARGS) \
 	-v "$(ROOT):$(CONTAINER_WORKSPACE)" \
 	-w "$(CONTAINER_WORKSPACE)" \
 	-e "PATH=$(CONTAINER_WORKSPACE)/$(VENV)/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
@@ -33,13 +35,14 @@ PLUGIN_SRCS += $(shell find ExternalModules messages python -type f 2>/dev/null)
 
 .DEFAULT_GOAL := help
 
-.PHONY: help docker-check require-image image plugins plugins-force run shell smoke clean image-clean
+.PHONY: help docker-check require-image image plugins plugins-force run live shell smoke test clean image-clean
 
 help:
 	@echo "PEROVSAT Basilisk"
 	@echo
 	@echo "  make shell                              Drop into a container shell (venv on PATH)"
 	@echo "  make run SCRIPT=experiments/foo/run.py  Run a Python script in the container"
+	@echo "  make live VIZARD_ADDRESS=127.0.0.1       Live Vizard with Docker host networking"
 	@echo "  make plugins                            Compile C++ plugins if sources changed"
 	@echo "  make smoke                              Import compiled plugins"
 	@echo "  make image                              Rebuild the Docker toolchain image"
@@ -87,6 +90,11 @@ ifndef SCRIPT
 endif
 	$(DOCKER_RUN) python $(SCRIPT) $(ARGS)
 
+# Native Linux: Vizard can listen on localhost. With WSL + Windows Vizard,
+# VIZARD_ADDRESS must be the reachable Windows host address instead.
+live:
+	$(MAKE) run SCRIPT=experiments/realtime/run.py DOCKER_ARGS="$(DOCKER_ARGS) --network host" ARGS="--live --viz-address $(VIZARD_ADDRESS) $(ARGS)"
+
 shell: plugins
 	docker run --rm -it \
 		-v "$(ROOT):$(CONTAINER_WORKSPACE)" \
@@ -98,7 +106,10 @@ shell: plugins
 		/bin/bash
 
 smoke: plugins
-	$(DOCKER_RUN) python -c "from perovsat_plugins.permanentMagnet import PermanentMagnet; from perovsat_plugins.hyteresisRods import HysteresisRods; print('plugins ok')"
+	$(DOCKER_RUN) python -c "from perovsat_plugins.permanentMagnet import PermanentMagnet; from perovsat_plugins.hysteresisRods import HysteresisRods; print('plugins ok')"
+
+test: plugins
+	$(DOCKER_RUN) python -m unittest discover -s tests -v
 
 clean:
 	rm -rf $(VENV) build dist _skbuild .pytest_cache src/*.egg-info perovsat_plugins.egg-info

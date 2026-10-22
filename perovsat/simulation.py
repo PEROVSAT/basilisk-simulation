@@ -6,7 +6,6 @@ hardware lives in ``config.py``; this module only orchestrates Basilisk.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
@@ -15,52 +14,65 @@ from Basilisk.utilities import SimulationBaseClass, macros, vizSupport
 
 from perovsat import config
 from perovsat._bsk import attach_recorder
-from perovsat.environment import setup_environment
-from perovsat.log import SimLog
-from perovsat.pmac import setup_pmac
-from perovsat.power import setup_power
+from perovsat.environment import Environment, setup_environment
+from perovsat.log import SimLog, SimulationRecorders
+from perovsat.pmac import PmacStack, setup_pmac
+from perovsat.power import PowerStack, setup_power
+from perovsat.run_config import RunConfig
+from perovsat.vizard import wait_for_vizard
 
 _TASK = "simTask"
 
 
-@dataclass
-class RunConfig:
-    """Knobs for this execution. The satellite itself is ``config.py``."""
-
-    name: str = "unnamed"
-    duration_s: float = 3600.0
-    timestep_s: float = 0.5
-    record_period_s: float = 1.0
-    omega_init: list | None = None
-    sigma_init: list | None = None
-    soc_init: float | None = None
-    epoch_utc: str | None = None
-    output_dir: str | Path | None = None
-    vizard: bool = False
 
 
 class PerovSatSimulation:
+    """Own the Basilisk wrappers for exactly one execution."""
+
     def __init__(self, cfg: RunConfig):
         self.config = cfg
         self.output_dir = Path(cfg.output_dir) if cfg.output_dir else Path("output")
-        self.scSim = None
-        self.scObject = None
-        self.integrator = None
-        self.env = None
-        self.pmac = None
-        self.power = None
+        self._started = False
+        self.scSim: SimulationBaseClass.SimBaseClass | None = None
+        self.scObject: spacecraft.Spacecraft | None = None
+        self.integrator: svIntegrators.svIntegratorRKF45 | None = None
+        self.env: Environment | None = None
+        self.pmac: PmacStack | None = None
+        self.power: PowerStack | None = None
         self.viz = None
         self.log: SimLog | None = None
+        self.pacer = None
+        self.status = "not started"
 
     def run(self) -> SimLog:
+        if self._started:
+            raise RuntimeError("simulation instances support one run; create a new instance")
+        self.config.validate()
+        config.validate_vehicle()
+        self._started = True
         self._build()
         print(
             f"\nRunning {self.config.name} for {self.config.duration_s:.1f} s "
             f"(dt={self.config.timestep_s} s)..."
         )
-        self.scSim.InitializeSimulation()
-        self.scSim.ConfigureStopTime(macros.sec2nano(self.config.duration_s))
-        self.scSim.ExecuteSimulation()
+        self.status = "initializing"
+        try:
+            if self.config.vizard_live:
+                self.status = "waiting for Vizard"
+                wait_for_vizard(self.config.vizard_address, self.config.vizard_timeout_s)
+            self.scSim.InitializeSimulation()
+            self.scSim.ConfigureStopTime(macros.sec2nano(self.config.duration_s))
+            self.status = "running"
+            self.scSim.ExecuteSimulation()
+            assert self.log is not None
+            self.log.validate()
+        except (Exception, KeyboardInterrupt):
+            self.status = "interrupted or failed"
+            self._write_summary()
+            if self.pacer is not None and self.pacer.failure:
+                raise RuntimeError(self.pacer.failure) from None
+            raise
+        self.status = "complete"
         print("Simulation complete.\n")
         self._write_summary()
         return self.log
@@ -71,7 +83,7 @@ class PerovSatSimulation:
         print(f"\n{'=' * 60}\nPEROVSAT  {cfg.name}\nOutput: {self.output_dir}\n{'=' * 60}\n")
 
         self.scSim = SimulationBaseClass.SimBaseClass()
-        self.scSim.SetProgressBar(True)
+        self.scSim.SetProgressBar(not cfg.realtime)
         process = self.scSim.CreateNewProcess("simProcess")
         process.addTask(self.scSim.CreateNewTask(_TASK, macros.sec2nano(cfg.timestep_s)))
         rec_ns = macros.sec2nano(cfg.record_period_s)
@@ -95,18 +107,22 @@ class PerovSatSimulation:
             rec_ns,
             soc=cfg.soc_init,
         )
-        if cfg.vizard:
+        if cfg.vizard or cfg.vizard_live:
             self._setup_vizard()
 
-        recorders = {
-            "scState": attach_recorder(
-                self.scSim, _TASK, self.scObject.scStateOutMsg, rec_ns
-            ),
-            **self.env.recorders,
-            **self.pmac.recorders,
-            **self.power.recorders,
-        }
+        recorders = SimulationRecorders(
+            scState=attach_recorder(self.scSim, _TASK, self.scObject.scStateOutMsg, rec_ns),
+            environment=self.env.recorders,
+            pmac=self.pmac.recorders,
+            power=self.power.recorders,
+        )
         self.log = SimLog(recorders, self.power.capacity_ws)
+        if cfg.realtime:
+            from perovsat.realtime import RealtimePacer
+
+            self.pacer = RealtimePacer(cfg)
+            # Lower priority runs after physics, output, and recorders (priority 0).
+            self.scSim.AddModelToTask(_TASK, self.pacer, -100)
 
     def _setup_spacecraft(self):
         cfg = self.config
@@ -127,27 +143,46 @@ class PerovSatSimulation:
 
     def _setup_vizard(self):
         if not vizSupport.vizFound:
+            if self.config.vizard_live:
+                raise RuntimeError("Live Vizard requested but Vizard support is unavailable")
             print("Vizard support not found; skipping Unity visualization output.")
             return
         # Basilisk appends ``_UnityViz.bin`` to this path.
         save_file = str((self.output_dir / self.config.name).resolve())
         self.viz = vizSupport.enableUnityVisualization(
-            self.scSim, _TASK, self.scObject, saveFile=save_file,
+            self.scSim, _TASK, self.scObject,
+            saveFile=save_file if self.config.vizard else None,
+            liveStream=self.config.vizard_live,
         )
-        print(f"Vizard: {save_file}_UnityViz.bin")
+        if self.config.vizard_live:
+            # Basilisk 2.10.2 connects; Vizard owns the listening socket.
+            self.viz.reqComAddress = self.config.vizard_address
+            print(f"Vizard destination: tcp://{self.config.vizard_address}:5556")
+        if self.config.vizard:
+            print(f"Vizard: {save_file}_UnityViz.bin")
 
     def _write_summary(self):
         path = self.output_dir / "summary.txt"
         cfg = self.config
         lines = [
             f"Experiment: {cfg.name}",
+            f"Status: {self.status}",
             f"Run at: {datetime.now().isoformat()}",
             "=" * 60,
             f"Duration: {cfg.duration_s:.1f} s",
             f"Timestep: {cfg.timestep_s:.3f} s",
             f"Record period: {cfg.record_period_s:.3f} s",
             f"Vizard: {'on' if cfg.vizard else 'off'}",
+            f"Vizard live: {'on' if cfg.vizard_live else 'off'}",
+            f"Real-time: {'on' if cfg.realtime else 'off'}",
         ]
+        if self.pacer is not None:
+            lines.extend(self.pacer.summary())
+        if cfg.vizard_live:
+            lines.extend([
+                f"Vizard destination: tcp://{cfg.vizard_address}:5556",
+                f"Vizard listener timeout: {cfg.vizard_timeout_s:g} s",
+            ])
         if self.log is not None and self.log.power.soc is not None and len(self.log.power.soc):
             lines.append(f"Final SOC: {self.log.power.soc[-1] * 100:.1f}%")
         path.write_text("\n".join(lines) + "\n")

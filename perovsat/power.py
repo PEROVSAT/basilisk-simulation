@@ -11,16 +11,18 @@ from dataclasses import dataclass
 
 from Basilisk.simulation import simpleBattery, simplePowerSink, simpleSolarPanel
 
+from perovsat.log import PowerRecorders
 from perovsat import config
+from perovsat.validation import fraction
 from perovsat._bsk import attach_recorder
 
 
 @dataclass
 class PowerStack:
-    battery: object
-    panels: dict
-    sinks: dict
-    recorders: dict
+    battery: simpleBattery.SimpleBattery
+    panels: dict[str, simpleSolarPanel.SimpleSolarPanel]
+    sinks: dict[str, simplePowerSink.SimplePowerSink]
+    recorders: PowerRecorders
     capacity_ws: float
 
 
@@ -35,7 +37,8 @@ def setup_power(
 ) -> PowerStack:
     if soc is None:
         soc = config.BATTERY_INITIAL_SOC
-    soc = max(0.0, min(1.0, soc))
+    config.validate_vehicle()
+    fraction("initial SOC", soc)
     capacity_ws = config.BATTERY_CAPACITY_WH * 3600.0
 
     panels = {}
@@ -79,12 +82,10 @@ def setup_power(
         battery=battery,
         panels=panels,
         sinks=sinks,
-        recorders={
-            "battery": attach_recorder(
-                scSim, task_name, battery.batPowerOutMsg, record_period_ns
-            ),
-            "panels": panel_recs,
-            "sinks": sink_recs,
-        },
+        recorders=PowerRecorders(
+            battery=attach_recorder(scSim, task_name, battery.batPowerOutMsg, record_period_ns),
+            panels=panel_recs,
+            sinks=sink_recs,
+        ),
         capacity_ws=capacity_ws,
     )

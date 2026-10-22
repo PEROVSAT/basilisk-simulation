@@ -10,6 +10,6 @@ sys.modules.setdefault("cSysModel", _cSysModel)
 # lack methods such as recorder().
 from . import messaging  # noqa: F401
 from . import permanentMagnet  # noqa: F401
-from . import hyteresisRods  # noqa: F401
+from . import hysteresisRods  # noqa: F401
 
-__all__ = ["hyteresisRods", "permanentMagnet", "messaging"]
+__all__ = ["hysteresisRods", "permanentMagnet", "messaging"]

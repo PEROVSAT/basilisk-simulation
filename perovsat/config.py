@@ -1,6 +1,6 @@
 """The PEROVSAT vehicle — numbers, not Basilisk wiring.
 
-Run knobs (duration, timestep, ICs) live on ``RunConfig`` in simulation.py.
+Run knobs (duration, timestep, ICs) live on ``RunConfig`` in run_config.py.
 Change this file when the satellite changes; branch the repo if you need a
 different vehicle.
 """
@@ -8,7 +8,9 @@ different vehicle.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from math import sqrt
+from math import sqrt, isfinite
+
+from perovsat.validation import positive, fraction, unit_vector
 
 _DUTY_SUM_EPS = 1e-9
 _INV_SQRT2 = sqrt(0.5)
@@ -59,6 +61,11 @@ class Panel:
     area_m2: float
     efficiency: float
 
+    def __post_init__(self) -> None:
+        unit_vector("panel normal", self.n_hat)
+        positive("panel area", self.area_m2)
+        fraction("panel efficiency", self.efficiency)
+
 
 # Body-fixed bus arrays. Cosine incidence already zeros a face pointed away
 # from the Sun; +X / +Y / -Y is the current layout.
@@ -76,8 +83,9 @@ class DeviceState:
     duty: float  # time fraction in this state; leftover duty is off at 0 W
 
     def __post_init__(self) -> None:
-        if not 0.0 <= self.duty <= 1.0:
-            raise ValueError(f"duty must be in [0, 1], got {self.duty}")
+        fraction("duty", self.duty)
+        if not isfinite(self.power_w) or self.power_w < 0:
+            raise ValueError("device power must be finite and nonnegative")
 
 
 @dataclass(frozen=True)
@@ -87,7 +95,7 @@ class Device:
     states: tuple[DeviceState, ...]
 
     def __post_init__(self) -> None:
-        if self.count < 1:
+        if isinstance(self.count, bool) or not isinstance(self.count, int) or self.count < 1:
             raise ValueError(f"count must be >= 1, got {self.count}")
         duty_sum = sum(s.duty for s in self.states)
         if duty_sum > 1.0 + _DUTY_SUM_EPS:
@@ -115,7 +123,7 @@ DEVICES = (
         "Eyestar",
         1,
         (
-            DeviceState("aquire", 1.4, (4/20)),
+            DeviceState("acquire", 1.4, (4/20)),
             DeviceState("maintain", 0.574, (4/20)), # These aren't exact, but a rough approximation based on the ICD and pointing issue
             DeviceState("listen", 0.308, (12/20)),
         )
@@ -162,6 +170,14 @@ class HystMaterial:
     Hc: float
     M0: float = 0.0
 
+    def __post_init__(self) -> None:
+        positive("Bs", self.Bs)
+        positive("Hc", self.Hc)
+        if not isfinite(self.Br) or not 0 < self.Br < self.Bs:
+            raise ValueError("Br must satisfy 0 < Br < Bs")
+        if not isfinite(self.M0):
+            raise ValueError("M0 must be finite")
+
 
 MATERIALS = {
     "z": HystMaterial(Bs=0.75, Br=0.001, Hc=5.0, M0=0.0),
@@ -175,6 +191,11 @@ class Rod:
     axis: tuple[float, float, float]
     material: str
 
+    def __post_init__(self) -> None:
+        unit_vector("rod axis", self.axis)
+        if self.material not in MATERIALS:
+            raise ValueError(f"unknown rod material: {self.material}")
+
 
 RODS = (
     Rod("HystRod_Z1", (0.0, 0.0, 1.0), "z"),
@@ -186,3 +207,16 @@ RODS = (
     Rod("HystRod_D1", (_INV_SQRT2, _INV_SQRT2, 0.0), "xy"),
     Rod("HystRod_D2", (_INV_SQRT2, -_INV_SQRT2, 0.0), "xy"),
 )
+
+
+def validate_vehicle() -> None:
+    """Check mutable module-level settings before constructing Basilisk models."""
+    positive("mass", MASS_KG)
+    positive("battery capacity", BATTERY_CAPACITY_WH)
+    fraction("initial SOC", BATTERY_INITIAL_SOC)
+    positive("rod length", ROD_LENGTH_M)
+    positive("rod diameter", ROD_DIAMETER_M)
+    if len({rod.tag for rod in RODS}) != len(RODS):
+        raise ValueError("rod tags must be unique")
+    if len({device.name for device in DEVICES}) != len(DEVICES):
+        raise ValueError("device names must be unique")
