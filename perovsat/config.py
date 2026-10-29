@@ -31,6 +31,8 @@ DIPOLE_BODY_AM2 = (0.0, 0.0, 0.15)
 # Default initial conditions; experiments may override via RunConfig.
 SIGMA_INIT = [[0.2], [-0.1], [0.3]]
 OMEGA_INIT_RADS = [[0.05], [0.07], [0.02]]
+# This SPICE epoch places the orbit and the World Magnetic Model. It is not
+# synchronized with the FlatSat and is not a sample timestamp.
 EPOCH_UTC = "2026 JUN 21 12:00:00.0 (UTC)"
 
 

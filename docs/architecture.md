@@ -14,7 +14,10 @@ segments, then clears those buffers. Existing experiments retain their full-memo
 | --- | --- |
 | [experiments/power/run.py](../experiments/power/run.py) | A complete experiment selecting settings and plotting output |
 | [perovsat/run_config.py](../perovsat/run_config.py) | Execution settings and validation |
-| [perovsat/realtime.py](../perovsat/realtime.py) | Native clock pacing and timing statistics |
+| [perovsat/pacing.py](../perovsat/pacing.py) | Native clock pacing and timing statistics |
+| [perovsat/realtime/scenario.py](../perovsat/realtime/scenario.py) | Scenario timestep, duration, and devices a future exporter may publish |
+| [perovsat/realtime/runner.py](../perovsat/realtime/runner.py) | One paced run; the vehicle epoch stays the orbit and magnetic-model default |
+| [perovsat/realtime/__main__.py](../perovsat/realtime/__main__.py) | CLI: `python -m perovsat.realtime SCENARIO.json` |
 | [perovsat/vizard.py](../perovsat/vizard.py) | TCP listener readiness before the native Vizard handshake |
 | [perovsat/config.py](../perovsat/config.py) | Hardware, initial defaults, orbit and material values |
 | [perovsat/simulation.py](../perovsat/simulation.py) | Build, execute, validate recordings, write summary |
@@ -91,7 +94,8 @@ values represent the same solver substage.
 | Task period (`timestep_s`) | Interval between scheduled module updates |
 | Recording period (`record_period_s`) | Requested sample interval; recorders execute on task ticks |
 | Solver steps | Adaptive RKF45 stages inside propagation, distinct from the task period |
-| Timestamps | Nanoseconds internally; `SimLog` exposes seconds |
+| Timestamps | Internal `SimLog` nanoseconds are simulation time, not UTC; `SimLog` exposes seconds |
+| `EPOCH_UTC` | Orbit and magnetic-model epoch; not locked to FlatSat or device clocks; real-time sample times must not be taken from it |
 | `N` | Inertial frame; environment uses an Earth-centered origin |
 | `B` | Spacecraft body frame |
 | `sigma_BN` | Modified Rodrigues parameters (MRPs): dimensionless attitude, not Euler angles |
@@ -105,6 +109,9 @@ values represent the same solver substage.
 Choose a recording period that is a multiple of the task period for easy
 interpretation. Recording faster does not make scheduled models update faster.
 An adaptive integrator does not remove the need to check task-period sensitivity.
+`EPOCH_UTC` is the orbit and magnetic-model epoch. It is not locked to FlatSat
+or device clocks, and real-time sample times must not be taken from it.
+Internal `SimLog` nanosecond timestamps are simulation time, not UTC.
 
 ## Model assumptions
 

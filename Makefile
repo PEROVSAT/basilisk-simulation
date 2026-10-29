@@ -2,6 +2,7 @@
 #
 #   make shell                              # interactive container
 #   make run SCRIPT=experiments/foo/run.py  # run any experiment
+#   make realtime SCENARIO=path/scenario.json  # paced scenario from JSON
 #   make plugins                            # recompile C++ if sources changed
 #   make image                              # rebuild the Docker toolchain image
 #
@@ -35,13 +36,14 @@ PLUGIN_SRCS += $(shell find ExternalModules messages python -type f 2>/dev/null)
 
 .DEFAULT_GOAL := help
 
-.PHONY: help docker-check require-image image plugins plugins-force run live mission mission-live shell smoke test clean image-clean
+.PHONY: help docker-check require-image image plugins plugins-force run realtime live mission mission-live shell smoke test clean image-clean
 
 help:
 	@echo "PEROVSAT Basilisk"
 	@echo
 	@echo "  make shell                              Drop into a container shell (venv on PATH)"
 	@echo "  make run SCRIPT=experiments/foo/run.py  Run a Python script in the container"
+	@echo "  make realtime SCENARIO=path/scenario.json  Paced scenario run from JSON"
 	@echo "  make live VIZARD_ADDRESS=127.0.0.1       Live Vizard with Docker host networking"
 	@echo "  make mission                            Three-day mission at real-time speed"
 	@echo "  make mission ARGS='--unpaced'            Three-day mission as fast as possible"
@@ -92,6 +94,12 @@ ifndef SCRIPT
 	$(error SCRIPT= is required, e.g. make run SCRIPT=experiments/detumble/run.py)
 endif
 	$(DOCKER_RUN) python $(SCRIPT) $(ARGS)
+
+realtime: plugins
+ifndef SCENARIO
+	$(error SCENARIO= is required, e.g. make realtime SCENARIO=experiments/realtime/scenario.json)
+endif
+	$(DOCKER_RUN) python -m perovsat.realtime $(SCENARIO)
 
 # Native Linux: Vizard can listen on localhost. With WSL + Windows Vizard,
 # VIZARD_ADDRESS must be the reachable Windows host address instead.

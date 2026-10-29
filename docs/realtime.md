@@ -16,6 +16,35 @@ the second takes approximately 30 seconds. Build, initialization, and the first
 physics tick are outside the measured pacing interval. The orbital epoch is unchanged.
 Existing experiments remain unpaced by default.
 
+## Scenario
+
+`make realtime` runs one paced scenario from a JSON file. `SCENARIO` is a path
+relative to the Basilisk repository root, which is the container working
+directory:
+
+```bash
+make realtime SCENARIO=path/to/scenario.json
+```
+
+The file is a JSON object with exactly these fields:
+
+| Field | Meaning |
+| --- | --- |
+| `timestep_s` | Finite task period greater than zero, and at least 1 ns after rounding to integer nanoseconds |
+| `duration_s` | Finite duration greater than zero, and a positive integer multiple of `timestep_s` in those rounded nanoseconds |
+| `devices` | Device names, in order, whose samples a future exporter may publish |
+
+`devices` may be empty. The run still propagates the orbit and the magnetic
+field, and no sample export is selected. The only known name is `imu`. That
+selection records that a future exporter may publish body-frame IMU stimulus.
+This slice does not encode frames and does not publish device samples.
+
+Any other field is rejected, including `epoch_utc`. The Basilisk epoch stays
+the vehicle default. That SPICE epoch places the orbit and the World Magnetic
+Model. It is not synchronized with the FlatSat, and real-time sample times
+must not be taken from it. The run writes `output/summary.txt` in the scenario
+file's directory when the simulation produces that file.
+
 Set `realtime=True` in `RunConfig` to enable pacing. `realtime_factor` defaults to 1.
 `max_lag_s=0.1` is the permitted wall-clock lag; `overrun_policy="warn"` warns once
 and counts every tick over the limit. `"stop"` raises an error and writes a partial

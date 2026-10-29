@@ -118,7 +118,7 @@ class PerovSatSimulation:
         )
         self.log = SimLog(recorders, self.power.capacity_ws)
         if cfg.realtime:
-            from perovsat.realtime import RealtimePacer
+            from perovsat.pacing import RealtimePacer
 
             self.pacer = RealtimePacer(cfg)
             # Lower priority runs after physics, output, and recorders (priority 0).

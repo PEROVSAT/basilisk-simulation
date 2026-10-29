@@ -13,6 +13,7 @@ Use `make mission ARGS='--unpaced'` for full-duration validation and the
 | Change | Start here |
 | --- | --- |
 | Duration, sampling, initial attitude/rate, SOC or epoch | Your experiment's `RunConfig` |
+| Scenario timestep, duration, and sample-export devices (`imu`) | [perovsat/realtime/scenario.py](../perovsat/realtime/scenario.py) |
 | Mass, inertia, panels, devices, battery, rods or orbit | [perovsat/config.py](../perovsat/config.py) |
 | Gravity, field or eclipse connections | [perovsat/environment.py](../perovsat/environment.py) |
 | Attached magnetic effectors | [perovsat/pmac.py](../perovsat/pmac.py) |
