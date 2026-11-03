@@ -5,7 +5,7 @@ from pathlib import Path
 import tempfile
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 import warnings
 
 import numpy as np
@@ -45,8 +45,14 @@ class RealtimeTests(unittest.TestCase):
                 sim = PerovSatSimulation(RunConfig(
                     output_dir=directory, vizard=save, vizard_live=live,
                     vizard_address="192.0.2.10"))
+                sim.scSim = MagicMock()
+                sim.scObject = MagicMock(ModelTag="PEROVSAT")
+                sim.power = MagicMock()
+                sim.env = MagicMock()
                 with patch.object(vizSupport, "vizFound", True), patch.object(
-                        vizSupport, "enableUnityVisualization") as enable:
+                        vizSupport, "enableUnityVisualization") as enable, \
+                        patch('perovsat.vizard_status.VizardStatus'), \
+                        patch('perovsat.vizard_status.set_status_panel'):
                     sim._setup_vizard()
                 self.assertEqual(enable.call_args.kwargs["liveStream"], live)
                 self.assertEqual(enable.call_args.kwargs["saveFile"] is not None, save)

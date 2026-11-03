@@ -39,6 +39,13 @@ Wait for `Waiting for Vizard listener`, then enter the matching
 and click **Start Visualization**. The runner waits for the listener before
 starting the native handshake. See [Real time](realtime.md) for networking details.
 
+Live missions use the same [status pane](realtime.md#status-gauges) as short runs,
+including battery state, power balance and all six faces' illumination. Gauges
+refresh every physics tick, independently of the mission recording period and
+segment boundaries. Add `--compact-status` to omit wall-clock diagnostics or
+`--hide-status` to omit the pane. The existing NPZ `illumination` channel remains
+the spacecraft eclipse factor; per-face percentages are not added to NPZ output.
+
 `--viz-timeout` bounds listener readiness only. Native handshake and streaming
 can block if the viewer stalls or disconnects, delaying stop handling. Viewer
 memory is separate from recorder memory. Prefer headless runs for unattended

@@ -19,6 +19,8 @@ def main(argv=None):
     parser.add_argument('--control', type=float, default=5, help='simulated seconds between stop checks')
     parser.add_argument('--output', help='new output directory; must not already exist')
     parser.add_argument('--live', action='store_true')
+    parser.add_argument('--hide-status', action='store_true', help='Hide Vizard status gauges')
+    parser.add_argument('--compact-status', action='store_true', help='Omit wall-clock diagnostics')
     parser.add_argument('--viz-address', default='127.0.0.1')
     parser.add_argument('--viz-timeout', type=float, default=120)
     parser.add_argument('--max-lag', type=float, default=.1)
@@ -31,6 +33,8 @@ def main(argv=None):
             realtime=not args.unpaced, realtime_factor=args.factor,
             vizard_live=args.live, vizard_address=args.viz_address,
             vizard_timeout_s=args.viz_timeout, max_lag_s=args.max_lag,
+            vizard_status_panel=not args.hide_status,
+            vizard_status_diagnostics=not args.compact_status,
             overrun_policy=args.overrun_policy)
     except ValueError as exc:
         parser.error(str(exc))

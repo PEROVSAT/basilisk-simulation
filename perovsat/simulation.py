@@ -40,6 +40,7 @@ class PerovSatSimulation:
         self.pmac: PmacStack | None = None
         self.power: PowerStack | None = None
         self.viz = None
+        self.vizard_status = None
         self.log: SimLog | None = None
         self.pacer = None
         self.status = "not started"
@@ -121,6 +122,8 @@ class PerovSatSimulation:
             from perovsat.realtime import RealtimePacer
 
             self.pacer = RealtimePacer(cfg)
+            if self.vizard_status is not None:
+                self.vizard_status.pacer = self.pacer
             # Lower priority runs after physics, output, and recorders (priority 0).
             self.scSim.AddModelToTask(_TASK, self.pacer, -100)
 
@@ -149,11 +152,29 @@ class PerovSatSimulation:
             return
         # Basilisk appends ``_UnityViz.bin`` to this path.
         save_file = str((self.output_dir / self.config.name).resolve())
+        from perovsat.vizard_status import VizardStatus, set_status_panel
+
+        if self.config.vizard_status_panel:
+            self.vizard_status = VizardStatus(
+                self.power.battery.batPowerOutMsg, self.env.eclipse_out_msg,
+                self.config.timestep_s,
+                panel_messages=[panel.nodePowerOutMsg for panel in self.power.panels.values()],
+                sink_messages=[sink.nodePowerOutMsg for sink in self.power.sinks.values()],
+                duration_s=self.config.duration_s,
+                realtime_factor=self.config.realtime_factor if self.config.realtime else None,
+                max_lag_s=self.config.max_lag_s,
+                diagnostics=self.config.vizard_status_diagnostics,
+                state_message=self.scObject.scStateOutMsg,
+                sun_message=self.env.sun_state_msg,
+            )
+            self.scSim.AddModelToTask(_TASK, self.vizard_status)
         self.viz = vizSupport.enableUnityVisualization(
             self.scSim, _TASK, self.scObject,
             saveFile=save_file if self.config.vizard else None,
             liveStream=self.config.vizard_live,
+            genericStorageList=[self.vizard_status.gauges] if self.vizard_status else None,
         )
+        set_status_panel(self.viz, self.scObject.ModelTag, self.vizard_status is not None)
         if self.config.vizard_live:
             # Basilisk 2.10.2 connects; Vizard owns the listening socket.
             self.viz.reqComAddress = self.config.vizard_address

@@ -31,11 +31,16 @@ class RunConfig:
     vizard_live: bool = False
     vizard_address: str = "127.0.0.1"
     vizard_timeout_s: float = 120.0
+    vizard_status_panel: bool = True
+    vizard_status_diagnostics: bool = True
 
     def __post_init__(self) -> None:
         self.validate()
 
     def validate(self) -> None:
+        for name in ("vizard_status_panel", "vizard_status_diagnostics"):
+            if not isinstance(getattr(self, name), bool):
+                raise ValueError(f"{name} must be a boolean")
         for name in ("duration_s", "timestep_s", "record_period_s",
                      "realtime_factor", "max_lag_s", "vizard_timeout_s"):
             positive(name, getattr(self, name))

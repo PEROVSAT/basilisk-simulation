@@ -17,9 +17,18 @@ view in [log.py](../perovsat/log.py).
 
 Each panel uses spacecraft attitude, the SPICE Sun state and eclipse
 illumination. Faces pointing away from the Sun produce zero power. At
-1361 W/m^2, one 0.008 m^2 (80 cm^2) panel produces about **2.50 W** at normal
-incidence before eclipse attenuation. The faces have different normals, so
+the installed Basilisk reference flux of 1372.5398 W/m^2 at 1 AU, one
+0.008 m^2 (80 cm^2) panel produces about **2.53 W** at normal incidence before
+eclipse attenuation. Flux also scales by the inverse square of the actual
+spacecraft-to-Sun distance. The faces have different normals, so
 summing all three normal-incidence outputs is not an achievable vehicle output.
+
+The [Vizard status pane](realtime.md#status-gauges) shows direct illumination
+for all six body faces, including faces without electrical panels. Its face
+percentage is eclipse visibility times positive cosine incidence, normalized
+to direct sunlight at the same Sun distance. It is independent of panel area
+and efficiency. The [validation report](face-illumination-validation.md) checks
+these values against actual panel power and independent reference models.
 
 ## Loads
 
