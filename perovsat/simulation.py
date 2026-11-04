@@ -42,6 +42,7 @@ class PerovSatSimulation:
         self.viz = None
         self.log: SimLog | None = None
         self.pacer = None
+        self.imu = None
         self.status = "not started"
 
     def run(self) -> SimLog:
@@ -72,6 +73,9 @@ class PerovSatSimulation:
             if self.pacer is not None and self.pacer.failure:
                 raise RuntimeError(self.pacer.failure) from None
             raise
+        finally:
+            if self.imu is not None:
+                self.imu.close()
         self.status = "complete"
         print("Simulation complete.\n")
         self._write_summary()
@@ -117,6 +121,13 @@ class PerovSatSimulation:
             power=self.power.recorders,
         )
         self.log = SimLog(recorders, self.power.capacity_ws)
+        if cfg.imu_stimulus:
+            from perovsat.imu import ImuStimulusEmitter
+
+            self.imu = ImuStimulusEmitter(cfg, self.output_dir)
+            self.imu.scStateInMsg.subscribeTo(self.scObject.scStateOutMsg)
+            # After physics and recorders (priority 0), before the pacer (-100).
+            self.scSim.AddModelToTask(_TASK, self.imu, -50)
         if cfg.realtime:
             from perovsat.realtime import RealtimePacer
 
@@ -178,6 +189,8 @@ class PerovSatSimulation:
         ]
         if self.pacer is not None:
             lines.extend(self.pacer.summary())
+        if self.imu is not None:
+            lines.extend(self.imu.summary())
         if cfg.vizard_live:
             lines.extend([
                 f"Vizard destination: tcp://{cfg.vizard_address}:5556",

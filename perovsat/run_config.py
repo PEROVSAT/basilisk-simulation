@@ -31,6 +31,8 @@ class RunConfig:
     vizard_live: bool = False
     vizard_address: str = "127.0.0.1"
     vizard_timeout_s: float = 120.0
+    imu_stimulus: bool = False
+    imu_print_every: int = 0
 
     def __post_init__(self) -> None:
         self.validate()
@@ -44,6 +46,9 @@ class RunConfig:
             raise ValueError("vizard_address must be an IPv4 address or hostname without spaces, protocol, or port")
         if self.overrun_policy not in ("warn", "stop"):
             raise ValueError("overrun_policy must be 'warn' or 'stop'")
+        if (not isinstance(self.imu_print_every, int) or isinstance(self.imu_print_every, bool)
+                or self.imu_print_every < 0):
+            raise ValueError("imu_print_every must be a non-negative integer (0 disables printing)")
         if self.soc_init is not None:
             fraction("initial SOC", self.soc_init)
         for name in ("omega_init", "sigma_init"):
