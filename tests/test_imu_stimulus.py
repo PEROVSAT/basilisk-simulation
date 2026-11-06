@@ -34,7 +34,10 @@ class ImuStimulusTests(unittest.TestCase):
             self.assertEqual(len(rows), len(log.t))
             np.testing.assert_allclose(rows[:, 0], log.t, rtol=0, atol=1e-9)
             np.testing.assert_array_equal(rows[:, 1], np.arange(len(rows)))
-            np.testing.assert_allclose(rows[:, 2:5], log.attitude.omega_B, rtol=1e-8, atol=0)
+            # Log columns are rpm at 1e-9 resolution; samples stay rad/s.
+            from perovsat.imu import RAD_S_PER_RPM
+            np.testing.assert_allclose(rows[:, 2:5] * RAD_S_PER_RPM, log.attitude.omega_B,
+                                       rtol=0, atol=1e-9)
             np.testing.assert_array_equal(sim.imu.last.gyro_rad_s, log.attitude.omega_B[-1])
             self.assertIn("IMU stimulus samples: 21",
                           Path(directory, "summary.txt").read_text())

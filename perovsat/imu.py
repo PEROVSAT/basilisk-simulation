@@ -7,6 +7,7 @@ is populated for now; nothing is encoded or transmitted yet.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -14,6 +15,9 @@ from Basilisk.architecture import messaging, sysModel
 
 # psp_sample_imu_stimulus rejects this sequence value.
 _SEQUENCE_INVALID = 0xFFFFFFFF
+
+# Samples stay in rad/s (protocol units); the log file and console use rpm.
+RAD_S_PER_RPM = 2 * math.pi / 60
 
 
 @dataclass
@@ -50,7 +54,7 @@ class ImuStimulusEmitter(sysModel.SysModel):
             raise RuntimeError("imuStimulus.scStateInMsg is not linked to a spacecraft state")
         self.close()
         self._file = self.path.open("w")
-        self._file.write("# time_s sequence gyro_x gyro_y gyro_z  (rad/s, body frame)\n")
+        self._file.write("# time_s sequence gyro_x gyro_y gyro_z  (rpm, body frame)\n")
 
     def UpdateState(self, current_time):
         state = self.scStateInMsg()
@@ -62,8 +66,8 @@ class ImuStimulusEmitter(sysModel.SysModel):
         self.last = sample
         self.emitted += 1
 
-        wx, wy, wz = sample.gyro_rad_s
-        line = f"{current_time * 1e-9:.9f} {sample.sequence} {wx:.9e} {wy:.9e} {wz:.9e}"
+        wx, wy, wz = (w / RAD_S_PER_RPM for w in sample.gyro_rad_s)
+        line = f"{current_time * 1e-9:.9f} {sample.sequence} {wx:.9f} {wy:.9f} {wz:.9f}"
         self._file.write(line + "\n")
         if self.print_every and sample.sequence % self.print_every == 0:
             print(f"[imu] {line}")

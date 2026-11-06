@@ -1,13 +1,13 @@
 Experiment: imu_stimulus
 Status: complete
-Run at: 2026-11-04T17:12:15.182853
+Run at: 2026-11-06T15:51:01.127521
 ============================================================
-Duration: 5.0 s
+Duration: 60.0 s
 Timestep: 0.100 s
 Record period: 0.100 s
 Vizard: off
 Vizard live: off
 Real-time: off
-IMU stimulus samples: 51
+IMU stimulus samples: 601
 IMU stimulus log: /Users/labibmuzahid/basilisk-simulation/experiments/imu_stimulus/output/imu_stimulus.log
 Final SOC: 80.0%
