@@ -67,6 +67,8 @@ class PerovSatSimulation:
             self.scSim.ExecuteSimulation()
             assert self.log is not None
             self.log.validate()
+            if self.imu is not None:
+                self.imu.finish()
         except (Exception, KeyboardInterrupt):
             self.status = "interrupted or failed"
             self._write_summary()
@@ -122,12 +124,11 @@ class PerovSatSimulation:
         )
         self.log = SimLog(recorders, self.power.capacity_ws)
         if cfg.imu_stimulus:
-            from perovsat.imu import ImuStimulusEmitter
+            from perovsat.imu import add_imu_stimulus
 
-            self.imu = ImuStimulusEmitter(cfg, self.output_dir)
-            self.imu.scStateInMsg.subscribeTo(self.scObject.scStateOutMsg)
-            # After physics and recorders (priority 0), before the pacer (-100).
-            self.scSim.AddModelToTask(_TASK, self.imu, -50)
+            self.imu = add_imu_stimulus(
+                self.scSim, _TASK, self.scObject.scStateOutMsg, cfg, self.output_dir,
+            )
         if cfg.realtime:
             from perovsat.realtime import RealtimePacer
 

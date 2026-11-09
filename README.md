@@ -16,6 +16,7 @@ magnet and hysteresis rods.
 | [Development](docs/development.md) | Experiments, hardware changes, builds, validation |
 | [Power](docs/power.md) | Panels, loads, battery, recorded power |
 | [Real time](docs/realtime.md) | Wall-clock pacing, timing diagnostics, live Vizard |
+| [HITL IMU](docs/hitl-imu.md) | Protocol IMU sample, sending it to the FlatSat bridge |
 | [Rod model](ExternalModules/hysteresisRods/README.md) | Hysteresis equations and parameters |
 
 ## Quick start
