@@ -11,5 +11,6 @@ sys.modules.setdefault("cSysModel", _cSysModel)
 from . import messaging  # noqa: F401
 from . import permanentMagnet  # noqa: F401
 from . import hysteresisRods  # noqa: F401
+from . import imuStimulus  # noqa: F401
 
-__all__ = ["hysteresisRods", "permanentMagnet", "messaging"]
+__all__ = ["hysteresisRods", "imuStimulus", "permanentMagnet", "messaging"]

@@ -20,6 +20,10 @@ def main():
     parser.add_argument("--axis", choices=("x", "y", "z"), default="z",
                         help="Body axis for --rpm")
     parser.add_argument("--realtime", action="store_true")
+    parser.add_argument("--bridge", metavar="HOST:PORT", default=None,
+                        help="Send each sample to the HITL bridge TCP listener (implies --realtime)")
+    parser.add_argument("--device-address", type=int, default=1,
+                        help="Emulated MPU6050 participant address (default 1)")
     args = parser.parse_args()
 
     omega_init = None
@@ -32,7 +36,8 @@ def main():
         timestep_s=args.timestep, record_period_s=args.timestep,
         omega_init=omega_init,
         imu_stimulus=True, imu_print_every=args.print_every,
-        realtime=args.realtime,
+        imu_bridge=args.bridge, imu_destination=args.device_address,
+        realtime=args.realtime or args.bridge is not None,
         output_dir=Path(__file__).resolve().parent / "output",
     ))
     sim.run()
