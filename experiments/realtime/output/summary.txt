@@ -1,19 +1,19 @@
 Experiment: realtime
-Status: interrupted or failed
-Run at: 2026-10-29T21:15:48.511757
+Status: complete
+Run at: 2026-11-11T17:52:06.741920
 ============================================================
 Duration: 600.0 s
-Timestep: 0.500 s
+Timestep: 0.025 s
 Record period: 1.000 s
 Vizard: off
 Vizard live: on
 Real-time: on
 Real-time factor: 1
 Paced simulation time: 600.000000 s
-Paced wall time: 497.408075 s
-Maximum tick work (including host overhead): 404.609700 s
-Maximum lag: 404.109969 s
-Ticks exceeding lag limit: 825
+Paced wall time: 1085.710171 s
+Maximum tick work (including host overhead): 824.660483 s
+Maximum lag: 824.632996 s
+Ticks exceeding lag limit: 18547
 Vizard destination: tcp://172.26.192.1:5556
-Vizard listener timeout: 120 s
+Vizard listener timeout: 600 s
 Final SOC: 80.2%

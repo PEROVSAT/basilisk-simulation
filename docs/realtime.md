@@ -1,5 +1,66 @@
 # Real-time execution
 
+## PEROVSAT spacecraft model
+
+Spacecraft model files are local-only and excluded from Git. A fresh clone does
+not include them: obtain the approved assets separately and place `perovsat.obj`
+and `perovsat.mtl` in `assets/spacecraft/perovsat/` on the Vizard computer.
+
+New live and recorded runs automatically replace the placeholder with
+`assets/spacecraft/perovsat/perovsat.obj` through the existing simulation setup.
+Run `make live` as usual and restart the visualization to load the model.
+Previously recorded files do not acquire the new model settings automatically.
+
+`VIZARD_MODEL_PATH` in `perovsat/config.py` is the path opened by **Vizard**:
+it currently points to `G:/basilisk-simulation/assets/spacecraft/perovsat/perovsat.obj`
+on Windows. Change it if moving the checkout or using a different viewer computer;
+do not substitute the Docker path. Recordings also reference this absolute path,
+so the asset must remain available there during playback.
+
+The model uses the user's observed-face correction, with unit scale:
+current +X maps to -Z, -X to +Z, +Y to +X, -Y to -X,
+and consequently +Z to -Y and -Z to +Y.
+The geometry is approximately 0.109 x 0.105 x 0.115 meters and centered on
+its bounding box for viewing; this is a provisional visual origin, not a measured
+center of mass. The correction is numerically checked; confirm it visually on a
+fresh run using the labeled axes and Sun vector. Any visual correction belongs in
+`VIZARD_MODEL_ROTATION_RAD` (currently `(-pi/2, -pi/2, 0)` radians; the viewer
+maps the entries to Unity Euler angles `(y, z, -x)`), not the simulation's
+initial attitude or physical panel normals. The source hash and centering offset
+are recorded in the adjacent `perovsat.json`. The original GLB and Blender source
+were not modified. No separate preparation script is needed to run the model.
+
+The installed viewer reported `Loading glTF failed!` for the GLB, so the runtime
+asset now uses OBJ with the adjacent `perovsat.mtl`. Keep both files together.
+The OBJ preserves the centered geometry and normals and uses the CAD base colors;
+GLB transmission/volume material effects are not reproduced. Viewer rendering
+and body-axis alignment still need visual verification after restarting the run.
+
+## Sun direction and spacecraft faces
+
+New live streams and recorded Vizard files enable labeled spacecraft body axes
+and a gold pointing vector from the spacecraft toward the Sun. These use the
+stock Vizard viewer; no Unity rebuild is needed. Playback starts in spacecraft
+local view so the arrows are visible. Restart the visualization to load these
+startup settings; previously recorded files are unchanged.
+
+The body-axis labels `b1`, `b2`, `b3` correspond to `+X` (red), `+Y` (green),
+and `+Z` (blue). Their opposite directions correspond to the negative faces.
+The face whose outward normal most closely aligns with the gold arrow is most
+directly Sun-facing. The arrow points **toward** the Sun, opposite the direction
+of incoming light. It continues pointing at the Sun in eclipse: check Sun
+visibility and face illumination gauges to determine whether light reaches the
+spacecraft. Arrow length is a visual aid, not distance or irradiance.
+
+At 1x speed with a 0.025-second physics timestep, use
+`ARGS='--duration 300 --factor 1 --timestep 0.025 --viz-timeout 600'` with `make live`.
+Vizard's rendering/update rate may differ from the 40 Hz physics cadence.
+
+The native vector and axis controls are described in the
+[Basilisk Vizard settings reference](https://avslab.github.io/basilisk/Vizard/vizardAdvanced/vizardSettings.html).
+
+## Running
+
 For a fixed-duration three-day mission with incremental telemetry and graceful
 stop handling, use [Missions](mission.md). The commands below remain short
 real-time demonstrations with in-memory recordings.
@@ -88,6 +149,13 @@ interruption tests. Timing tolerances allow ordinary host scheduling jitter.
 Docker/WSL execution is soft real time and does not guarantee hardware deadlines.
 
 ## Status gauges
+
+For the optional redesigned native viewer, see [Custom Vizard UI](../vizard-ui/README.md).
+It provides a prepared Unity overlay with Barlow typography, grouped cards and
+always-expanded readings. It requires building a custom Vizard executable;
+the Python simulation alone cannot change the stock viewer's font or layout.
+The overlay has not yet been compiled or visually verified because Unity is
+not installed on the development machine.
 
 ### WSL status-pane quick start
 

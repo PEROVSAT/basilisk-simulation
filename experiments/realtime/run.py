@@ -10,6 +10,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--duration", type=float, default=60)
     parser.add_argument("--factor", type=float, default=1)
+    parser.add_argument("--timestep", type=float, default=0.5,
+                        help="Simulation timestep in seconds (default: 0.5)")
     parser.add_argument("--live", action="store_true")
     parser.add_argument("--hide-status", action="store_true", help="Hide Vizard status gauges")
     parser.add_argument("--compact-status", action="store_true", help="Omit wall-clock diagnostics")
@@ -19,7 +21,7 @@ def main():
                         help="Seconds to wait for Vizard's TCP listener (default: 120)")
     args = parser.parse_args()
     PerovSatSimulation(RunConfig(
-        name="realtime", duration_s=args.duration, realtime=True,
+        name="realtime", duration_s=args.duration, timestep_s=args.timestep, realtime=True,
         realtime_factor=args.factor, vizard_live=args.live,
         vizard_address=args.viz_address,
         vizard_timeout_s=args.viz_timeout,

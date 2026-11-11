@@ -175,6 +175,29 @@ class PerovSatSimulation:
             genericStorageList=[self.vizard_status.gauges] if self.vizard_status else None,
         )
         set_status_panel(self.viz, self.scObject.ModelTag, self.vizard_status is not None)
+        # The prepared OBJ is already centered and uses meters. Its visual
+        # origin remains provisional; rotation follows the user's face mapping.
+        # Do not resolve this viewer-side path with Linux/Docker pathlib.
+        vizSupport.createCustomModel(
+            self.viz,
+            modelPath=config.VIZARD_MODEL_PATH,
+            simBodiesToModify=[self.scObject.ModelTag],
+            offset=[0.0, 0.0, 0.0],
+            rotation=list(config.VIZARD_MODEL_ROTATION_RAD),
+            scale=[1.0, 1.0, 1.0],
+        )
+        print(f"Vizard spacecraft model: {config.VIZARD_MODEL_PATH} (user face mapping applied)")
+        # Body axes rotate with the same attitude used by the face illumination
+        # gauges. Vizard updates the Sun direction from the streamed body states.
+        from Basilisk.simulation import vizInterface
+        self.viz.settings.spacecraftCSon = 1
+        self.viz.settings.showCSLabels = 1
+        self.viz.settings.forceStartAtSpacecraftLocalView = 1
+        sun_line = vizInterface.PointLine()
+        sun_line.fromBodyName = self.scObject.ModelTag
+        sun_line.toBodyName = self.env.grav_factory.gravBodies["sun"].displayName
+        sun_line.lineColor = vizSupport.toRGBA255([255, 205, 64, 255])
+        self.viz.settings.pointLineList.push_back(sun_line)
         if self.config.vizard_live:
             # Basilisk 2.10.2 connects; Vizard owns the listening socket.
             self.viz.reqComAddress = self.config.vizard_address

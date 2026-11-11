@@ -8,7 +8,7 @@ different vehicle.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from math import sqrt, isfinite
+from math import sqrt, isfinite, pi
 
 from perovsat.validation import positive, fraction, unit_vector
 
@@ -32,6 +32,15 @@ DIPOLE_BODY_AM2 = (0.0, 0.0, 0.15)
 SIGMA_INIT = [[0.2], [-0.1], [0.3]]
 OMEGA_INIT_RADS = [[0.05], [0.07], [0.02]]
 EPOCH_UTC = "2026 JUN 21 12:00:00.0 (UTC)"
+
+# Vizard reads this path on the viewer computer, not inside Basilisk's Docker
+# container. This is the Windows checkout used by the current live/playback setup.
+VIZARD_MODEL_PATH = "G:/basilisk-simulation/assets/spacecraft/perovsat/perovsat.obj"
+# User's observed-face -> actual-body mapping: +X -> -Z, +Y -> +X,
+# hence +Z -> -Y (and the opposite faces follow). Relative to the zero-
+# rotation OBJ import. Vizard applies these radians as Unity Euler(y, z, -x)
+# after conversion to degrees; Unity composes in Z-X-Y order.
+VIZARD_MODEL_ROTATION_RAD = (-pi / 2, -pi / 2, 0.0)
 
 
 # ---------------------------------------------------------------------------

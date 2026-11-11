@@ -17,6 +17,7 @@ magnet and hysteresis rods.
 | [Power](docs/power.md) | Panels, loads, battery, recorded power |
 | [Real time](docs/realtime.md) | WSL launch commands, live status pane, six-face illumination, timing diagnostics |
 | [Illumination validation](docs/face-illumination-validation.md) | Random-timestep checks against independent geometry and native panel outputs |
+| [Custom Vizard UI](vizard-ui/README.md) | Prepared Unity overlay, fonts, always-expanded values, setup and build steps |
 | [Missions](docs/mission.md) | Three-day runs, segmented telemetry, stopping and validation |
 | [Rod model](ExternalModules/hysteresisRods/README.md) | Hysteresis equations and parameters |
 
