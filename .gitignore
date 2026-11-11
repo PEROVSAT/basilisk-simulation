@@ -1,5 +1,15 @@
 _VizFiles
+experiments/mission/output/
 .build/
+
+# Spacecraft CAD and prepared viewer assets stay local.
+/assets/spacecraft/
+*.blend
+*.blend1
+*.glb
+*.gltf
+*.obj
+*.mtl
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

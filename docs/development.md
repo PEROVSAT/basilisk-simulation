@@ -2,6 +2,12 @@
 
 [Documentation index](../README.md)
 
+Mission settings extend `RunConfig` in `perovsat/mission_config.py`. Run `make test`
+after changes to timing, recorders or lifecycle: mission tests cover segmented
+equivalence, partial segments, file protection, failure handling and pacing.
+Use `make mission ARGS='--unpaced'` for full-duration validation and the
+[mission analyzer](mission.md#validate-and-read-telemetry) to verify saved data.
+
 ## Where to make a change
 
 | Change | Start here |
@@ -11,6 +17,7 @@
 | Gravity, field or eclipse connections | [perovsat/environment.py](../perovsat/environment.py) |
 | Attached magnetic effectors | [perovsat/pmac.py](../perovsat/pmac.py) |
 | Power connections | [perovsat/power.py](../perovsat/power.py) |
+| Vizard status fields, face normals or display calculations | [perovsat/vizard_status.py](../perovsat/vizard_status.py) |
 | Magnet or hysteresis equations | Corresponding C++ module in [ExternalModules/](../ExternalModules) |
 | Recorded data exposed to experiments | [perovsat/log.py](../perovsat/log.py) and subsystem recorder setup |
 | Shared plots | [experiments/plotting.py](../experiments/plotting.py) |
@@ -49,6 +56,8 @@ make run SCRIPT=experiments/my_study/run.py
 | `vizard_live` | `False`; stream to a Vizard listener |
 | `vizard_address` | `"127.0.0.1"`; IPv4 address or hostname, without spaces, protocol, or port |
 | `vizard_timeout_s` | `120.0`; positive finite timeout for TCP listener readiness |
+| `vizard_status_panel` | `True`; include spacecraft status gauges in live and saved Vizard output |
+| `vizard_status_diagnostics` | `True`; include measured cadence, speed, and paced-run lag |
 
 Initial vectors accept three entries or a 3×1 nested list. Follow the configured
 epoch format, for example `2026 JUN 21 12:00:00.0 (UTC)`. `RunConfig` can also
@@ -130,6 +139,17 @@ without Basilisk. Integration tests verify readiness failure prevents native
 initialization and writes a failed-run summary. These tests do not launch the
 Vizard GUI; follow [the live test procedure](realtime.md#live-test-procedure)
 when changing networking or handshake behavior.
+
+`tests/test_vizard_status.py` checks battery and eclipse states, unit conversions,
+measured timing, pane visibility, saved output, physics equivalence and mission
+segmentation. `tests/test_face_illumination.py` additionally checks known
+orientations and 256 seeded random timesteps plus penumbra ticks over a full
+orbit. It compares every face with independent axis-angle geometry and six
+native reference panels, and checks the three actual electrical panel outputs.
+See [Illumination validation](face-illumination-validation.md) for results and
+CSV export instructions. Face gauges are display telemetry; they are not new
+`SimLog` fields or mission NPZ channels. Add recording explicitly if an experiment
+needs those derived values in its normal saved telemetry.
 
 When sharing results, record the Git revision, local vehicle changes,
 `RunConfig`, command, output directory and validation performed. `summary.txt`

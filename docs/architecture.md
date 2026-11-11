@@ -2,6 +2,12 @@
 
 [Documentation index](../README.md)
 
+For long fixed-duration execution, [MissionRunner](../perovsat/mission.py) reuses
+the existing vehicle builder and retains its model owners. It advances absolute
+stop times without reinitializing models or clocks, saves validated recorder
+segments, then clears those buffers. Existing experiments retain their full-memory
+`SimLog` interface. See [Missions](mission.md) for the persisted telemetry schema.
+
 ## Read the code in this order
 
 | File or directory | Responsibility |
@@ -10,6 +16,7 @@
 | [perovsat/run_config.py](../perovsat/run_config.py) | Execution settings and validation |
 | [perovsat/realtime.py](../perovsat/realtime.py) | Native clock pacing and timing statistics |
 | [perovsat/vizard.py](../perovsat/vizard.py) | TCP listener readiness before the native Vizard handshake |
+| [perovsat/vizard_status.py](../perovsat/vizard_status.py) | Read-only live gauges, six-face illumination and wall-clock diagnostics |
 | [perovsat/config.py](../perovsat/config.py) | Hardware, initial defaults, orbit and material values |
 | [perovsat/simulation.py](../perovsat/simulation.py) | Build, execute, validate recordings, write summary |
 | [perovsat/environment.py](../perovsat/environment.py) | Gravity, initial orbit, SPICE, WMM and eclipses |
@@ -53,6 +60,16 @@ The task is assembled in this order: spacecraft; SPICE, WMM and eclipse;
 permanent magnet and rods; panels and loads; battery. Recorders are added as
 messages become available, all with the selected recording period.
 
+When Vizard is enabled, the optional status adapter runs after the power models
+and before Vizard publishes each frame. It reads current spacecraft attitude,
+spacecraft and Sun positions, eclipse visibility, battery and power-node
+messages directly, without reading or modifying recorder buffers. Six fixed
+body-axis face normals are defined in `vizard_status.FACE_NORMALS`; these are
+bus faces, independent of the three electrical panels in `config.PANELS`.
+The adapter retains its native gauge wrappers and message owners. It uses
+constant memory and works unchanged across segmented mission execution.
+The pacer still executes last, so displayed pacing lag is for the previous tick.
+
 ```mermaid
 flowchart TD
     Config[Vehicle configuration + RunConfig] --> Sim[PerovSatSimulation]
@@ -68,6 +85,13 @@ flowchart TD
     Eclipse --> Panels
     Panels --> Battery[Battery energy]
     Loads[Constant average loads] --> Battery
+    SC --> Status[Optional Vizard status adapter]
+    SPICE --> Status
+    Eclipse --> Status
+    Panels --> Status
+    Loads --> Status
+    Battery --> Status
+    Status --> Viewer[Vizard live frames or playback file]
     SC --> Logs[Recorders and SimLog]
     PMAC --> Logs
     WMM --> Logs

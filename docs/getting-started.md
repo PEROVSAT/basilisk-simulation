@@ -2,6 +2,10 @@
 
 [Documentation index](../README.md)
 
+For a three-day mission with incremental saved telemetry, follow [Missions](mission.md).
+`make mission` runs at real-time speed (72 hours); `make mission ARGS='--unpaced'`
+executes the same duration as fast as possible. Start with a short run first.
+
 ## What you will run
 
 PEROVSAT is a small satellite with a permanent magnet and hysteresis rods for

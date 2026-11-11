@@ -14,6 +14,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential \
         cmake \
         ninja-build \
+        git \
     && rm -rf /var/lib/apt/lists/*
 
 # pip is stripped from the upstream image. SWIG comes from PyPI so we get

@@ -15,7 +15,10 @@ magnet and hysteresis rods.
 | [Architecture](docs/architecture.md) | Code map, data flow, units, assumptions |
 | [Development](docs/development.md) | Experiments, hardware changes, builds, validation |
 | [Power](docs/power.md) | Panels, loads, battery, recorded power |
-| [Real time](docs/realtime.md) | Wall-clock pacing, timing diagnostics, live Vizard |
+| [Real time](docs/realtime.md) | WSL launch commands, live status pane, six-face illumination, timing diagnostics |
+| [Illumination validation](docs/face-illumination-validation.md) | Random-timestep checks against independent geometry and native panel outputs |
+| [Custom Vizard UI](vizard-ui/README.md) | Prepared Unity overlay, fonts, always-expanded values, setup and build steps |
+| [Missions](docs/mission.md) | Three-day runs, segmented telemetry, stopping and validation |
 | [HITL IMU](docs/hitl-imu.md) | Protocol IMU sample, sending it to the FlatSat bridge |
 | [Rod model](ExternalModules/hysteresisRods/README.md) | Hysteresis equations and parameters |
 
@@ -41,10 +44,17 @@ make run SCRIPT=experiments/detumble/run.py   # 22 simulated days
 make shell                                  # interactive container
 ```
 
+For a fixed-duration mission with incremental telemetry saving, use `make mission`
+(three days at 1x) or `make mission ARGS='--unpaced'` for the same duration as fast
+as possible. See [Missions](docs/mission.md) for output and live-viewer options.
+
 For live Vizard on the same native Linux host, run `make live`. Wait for
 `Waiting for Vizard listener`, then select **Receive & Reply** and **Live Display**
 in Vizard at `tcp://127.0.0.1:5556` and click **Start Visualization**.
 For Windows/WSL or another viewer host, follow [Real time](docs/realtime.md).
+The spacecraft storage pane shows battery state, power balance, all six body
+faces' illumination, and simulation timing. See the [WSL quick start](docs/realtime.md#wsl-status-pane-quick-start)
+for a 20x orbit demonstration or a normal-speed run.
 
 Plots and summaries go to each experiment's `output/` directory. Vehicle values
 live in [config.py](perovsat/config.py); execution settings live in

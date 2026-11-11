@@ -48,6 +48,7 @@ class ConfigurationTests(unittest.TestCase):
             {"vizard_timeout_s": 0}, {"vizard_timeout_s": float("inf")},
             {"vizard_address": ""}, {"vizard_address": " tcp://localhost:5556"},
             {"vizard_address": "localhost:5556"}, {"vizard_address": None},
+            {"vizard_status_panel": "false"}, {"vizard_status_diagnostics": 1},
         ):
             with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
                 RunConfig(**kwargs)
