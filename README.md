@@ -19,6 +19,7 @@ magnet and hysteresis rods.
 | [Illumination validation](docs/face-illumination-validation.md) | Random-timestep checks against independent geometry and native panel outputs |
 | [Custom Vizard UI](vizard-ui/README.md) | Prepared Unity overlay, fonts, always-expanded values, setup and build steps |
 | [Missions](docs/mission.md) | Three-day runs, segmented telemetry, stopping and validation |
+| [HITL IMU](docs/hitl-imu.md) | Protocol IMU sample, sending it to the FlatSat bridge |
 | [Rod model](ExternalModules/hysteresisRods/README.md) | Hysteresis equations and parameters |
 
 ## Quick start

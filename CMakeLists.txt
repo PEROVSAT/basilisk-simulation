@@ -62,3 +62,35 @@ bsk_generate_messages(
   MSG_HEADERS
     "${CMAKE_CURRENT_SOURCE_DIR}/messages/HysteresisDebugMsgPayload.h"
 )
+
+# perovsat-protocol — C11 codec for HITL bench frames. A sibling checkout is
+# used when present (the FlatSat west workspace layout, also mounted by the
+# Makefile's Docker runs); otherwise a pinned commit is fetched.
+set(PEROVSAT_PROTOCOL_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../perovsat-protocol"
+  CACHE PATH "perovsat-protocol source checkout")
+if(EXISTS "${PEROVSAT_PROTOCOL_ROOT}/simulation/frame/frame.h")
+  add_subdirectory("${PEROVSAT_PROTOCOL_ROOT}" perovsat-protocol EXCLUDE_FROM_ALL)
+else()
+  include(FetchContent)
+  FetchContent_Declare(perovsat_protocol
+    GIT_REPOSITORY https://github.com/PEROVSAT/perovsat-protocol.git
+    GIT_TAG 4afb3c143f1aab69f2dac92f98ca8f71be7d0a96
+    EXCLUDE_FROM_ALL
+  )
+  FetchContent_MakeAvailable(perovsat_protocol)
+endif()
+# Static archives linked into a Python extension module.
+set_target_properties(perovsat_protocol_core perovsat_protocol_simulation
+  PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
+# imuStimulus — fills a perovsat-protocol IMU stimulus sample from spacecraft
+# truth and serializes bench frames for the HITL bridge.
+bsk_add_swig_module(
+  TARGET imuStimulus
+  INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/ExternalModules/imuStimulus/imuStimulus.i"
+  SOURCES   "${CMAKE_CURRENT_SOURCE_DIR}/ExternalModules/imuStimulus/imuStimulus.cpp"
+  INCLUDE_DIRS
+    "${CMAKE_CURRENT_SOURCE_DIR}/ExternalModules/imuStimulus"
+  LINK_LIBS perovsat_protocol_simulation
+  OUTPUT_DIR "${PLUGIN_PKG_DIR}"
+)

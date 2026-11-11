@@ -22,8 +22,14 @@ TTY_FLAGS := $(shell [ -t 0 ] && echo -it)
 # Repo root covers both experiments.* and perovsat.* — no sys.path hacks in Python.
 PYTHONPATH_VAL := $(CONTAINER_WORKSPACE)
 
+# perovsat-protocol sits beside this checkout (as in the FlatSat workspace).
+# Mount it at the matching sibling path so CMake finds ../perovsat-protocol;
+# without it, CMake fetches the pinned commit instead.
+PROTOCOL_ROOT  ?= $(abspath $(ROOT)/../perovsat-protocol)
+PROTOCOL_MOUNT := $(if $(wildcard $(PROTOCOL_ROOT)/CMakeLists.txt),-v "$(PROTOCOL_ROOT):$(dir $(CONTAINER_WORKSPACE))perovsat-protocol:ro")
+
 DOCKER_RUN = docker run --rm $(TTY_FLAGS) $(DOCKER_ARGS) \
-	-v "$(ROOT):$(CONTAINER_WORKSPACE)" \
+	-v "$(ROOT):$(CONTAINER_WORKSPACE)" $(PROTOCOL_MOUNT) \
 	-w "$(CONTAINER_WORKSPACE)" \
 	-e "PATH=$(CONTAINER_WORKSPACE)/$(VENV)/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
 	-e "PYTHONPATH=$(PYTHONPATH_VAL)" \
@@ -32,6 +38,7 @@ DOCKER_RUN = docker run --rm $(TTY_FLAGS) $(DOCKER_ARGS) \
 
 PLUGIN_SRCS := pyproject.toml CMakeLists.txt
 PLUGIN_SRCS += $(shell find ExternalModules messages python -type f 2>/dev/null)
+PLUGIN_SRCS += $(shell find $(PROTOCOL_ROOT)/CMakeLists.txt $(PROTOCOL_ROOT)/core $(PROTOCOL_ROOT)/simulation -name CMakeLists.txt -o -name '*.[ch]' 2>/dev/null)
 
 .DEFAULT_GOAL := help
 
@@ -106,7 +113,7 @@ mission-live:
 
 shell: plugins
 	docker run --rm -it \
-		-v "$(ROOT):$(CONTAINER_WORKSPACE)" \
+		-v "$(ROOT):$(CONTAINER_WORKSPACE)" $(PROTOCOL_MOUNT) \
 		-w "$(CONTAINER_WORKSPACE)" \
 		-e "PATH=$(CONTAINER_WORKSPACE)/$(VENV)/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
 		-e "PYTHONPATH=$(PYTHONPATH_VAL)" \

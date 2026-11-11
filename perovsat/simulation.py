@@ -43,6 +43,7 @@ class PerovSatSimulation:
         self.vizard_status = None
         self.log: SimLog | None = None
         self.pacer = None
+        self.imu = None
         self.status = "not started"
 
     def run(self) -> SimLog:
@@ -67,12 +68,17 @@ class PerovSatSimulation:
             self.scSim.ExecuteSimulation()
             assert self.log is not None
             self.log.validate()
+            if self.imu is not None:
+                self.imu.finish()
         except (Exception, KeyboardInterrupt):
             self.status = "interrupted or failed"
             self._write_summary()
             if self.pacer is not None and self.pacer.failure:
                 raise RuntimeError(self.pacer.failure) from None
             raise
+        finally:
+            if self.imu is not None:
+                self.imu.close()
         self.status = "complete"
         print("Simulation complete.\n")
         self._write_summary()
@@ -118,6 +124,12 @@ class PerovSatSimulation:
             power=self.power.recorders,
         )
         self.log = SimLog(recorders, self.power.capacity_ws)
+        if cfg.imu_stimulus:
+            from perovsat.imu import add_imu_stimulus
+
+            self.imu = add_imu_stimulus(
+                self.scSim, _TASK, self.scObject.scStateOutMsg, cfg, self.output_dir,
+            )
         if cfg.realtime:
             from perovsat.realtime import RealtimePacer
 
@@ -178,6 +190,9 @@ class PerovSatSimulation:
         # The prepared OBJ is already centered and uses meters. Its visual
         # origin remains provisional; rotation follows the user's face mapping.
         # Do not resolve this viewer-side path with Linux/Docker pathlib.
+        # Basilisk 2.10.2 keeps this helper list globally, across simulation
+        # instances. Each PEROVSAT run must publish only its own model settings.
+        vizSupport.customModelList.clear()
         vizSupport.createCustomModel(
             self.viz,
             modelPath=config.VIZARD_MODEL_PATH,
@@ -222,6 +237,8 @@ class PerovSatSimulation:
         ]
         if self.pacer is not None:
             lines.extend(self.pacer.summary())
+        if self.imu is not None:
+            lines.extend(self.imu.summary())
         if cfg.vizard_live:
             lines.extend([
                 f"Vizard destination: tcp://{cfg.vizard_address}:5556",

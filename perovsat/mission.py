@@ -91,6 +91,8 @@ class MissionRunner:
                     next_segment += segment
                 self._progress()
             self._save_segment()
+            if current == duration and self.sim.imu is not None:
+                self.sim.imu.finish()
             self.manifest['status'] = 'complete' if current == duration else 'interrupted'
         except KeyboardInterrupt:
             self.manifest['status'] = 'interrupted'
@@ -106,6 +108,8 @@ class MissionRunner:
                 warnings.warn(f'Could not update failure manifest: {write_error}')
             raise
         finally:
+            if self.sim is not None and self.sim.imu is not None:
+                self.sim.imu.close()
             # The status file only claims completed chunks/steps; no silent resume.
             if self.manifest['status'] != 'failed':
                 self._write_status()

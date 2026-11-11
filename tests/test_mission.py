@@ -30,6 +30,19 @@ class MissionConfigTests(unittest.TestCase):
 
 @unittest.skipUnless(importlib.util.find_spec('Basilisk'), 'Basilisk is not installed')
 class MissionTests(unittest.TestCase):
+    def test_mission_with_imu_and_vizard_closes_emitter(self):
+        from perovsat.mission import MissionRunner
+
+        with tempfile.TemporaryDirectory() as tmp:
+            runner = MissionRunner(self.cfg(Path(tmp)/'combined',
+                imu_stimulus=True, vizard=True))
+            result = runner.run()
+            self.assertEqual(result['status'], 'complete')
+            self.assertEqual(runner.sim.imu.emitted, 13)
+            self.assertIsNone(runner.sim.imu._file)
+            self.assertIsNone(runner.sim.imu.link)
+            self.assertEqual(len(list(runner.sim.viz.settings.customModelList)), 1)
+
     def cfg(self, path, **kwargs):
         values = dict(duration_s=6, timestep_s=.5, record_period_s=1,
                       segment_s=2, control_s=.5, realtime=False, output_dir=path)

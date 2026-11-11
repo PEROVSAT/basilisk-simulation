@@ -49,6 +49,7 @@ class RealtimeTests(unittest.TestCase):
                 sim.scObject = MagicMock(ModelTag="PEROVSAT")
                 sim.power = MagicMock()
                 sim.env = MagicMock()
+                sim.env.grav_factory.gravBodies = {"sun": MagicMock(displayName="sun")}
                 with patch.object(vizSupport, "vizFound", True), patch.object(
                         vizSupport, "enableUnityVisualization") as enable, \
                         patch('perovsat.vizard_status.VizardStatus'), \
